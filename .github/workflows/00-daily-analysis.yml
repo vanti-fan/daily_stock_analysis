@@ -56,6 +56,26 @@ jobs:
           pip install -r requirements.txt
           python -c "import futu; print('✅ futu SDK import OK')"
       
+      - name: 安装图片渲染依赖
+        if: ${{ github.ref == 'refs/heads/feature/telegram-dashboard-v1' && vars.MARKDOWN_TO_IMAGE_CHANNELS != '' }}
+        run: |
+          echo "Installing image rendering dependencies..."
+          sudo apt-get update
+          sudo apt-get install -y wkhtmltopdf fonts-noto-cjk fontconfig
+
+          echo "Checking rendering engine..."
+          wkhtmltoimage --version
+
+          echo "Checking Chinese fonts..."
+          fc-match "Noto Sans CJK SC"
+
+          echo "Checking Python dependencies..."
+          python -c "import markdown2, imgkit; print('Python rendering dependencies OK')"
+
+          echo "QT_QPA_PLATFORM=offscreen" >> "$GITHUB_ENV"
+
+          echo "Image rendering dependencies installed successfully."
+
       - name: 创建必要目录
         run: |
           mkdir -p data logs reports
