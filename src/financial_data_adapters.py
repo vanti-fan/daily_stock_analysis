@@ -8,6 +8,7 @@ from src.financial_data_model import (
     AIResearchResult, ChipDistribution, DataQualityRecord, DataStatus,
     ExecutionMetadata, FinancialField, FundamentalData, HistoricalOHLCV,
     MarketSnapshot, OHLCVBar, Origin, StockFinancialData, StockIdentity,
+    MarketBreadth, SectorPerformance, MarketFinancialData,
     TechnicalIndicators, finite_number, json_safe,
 )
 
@@ -252,3 +253,36 @@ def build_stock_data(identity, *, quote=None, history=None, history_source=None,
         "pe_ratio", "pb_ratio", "total_market_cap", "float_market_cap")})
     return StockFinancialData(identity, snapshot, bars, technical,
                               chip_fields(chip, identity), fundamentals, research, execution)
+
+
+def build_market_data(market, *, breadth=None, sectors=(), currency=None,
+                      source=None, trade_date=None):
+    """Explicit normalized inputs only; upstream market-payload adapter is separate."""
+    if not isinstance(market, str) or not market.strip():
+        raise ValueError("Market identity is required")
+    breadth = breadth or {}
+    values = {}
+    for key in ("advancing", "declining", "unchanged", "limit_up", "limit_down", "amount"):
+        raw = read(breadth, key)
+        unit = currency if key == "amount" else "count"
+        n = finite_number(raw)
+        if key != "amount" and n is not None and n != int(n):
+            raw = float("nan")
+        values[key] = field(key, raw, unit, source=source, trade_date=day(trade_date),
+                            minimum=0)
+    groups = []
+    for item in sectors:
+        name = string(read(item, "name"))
+        category = string(read(item, "category"))
+        if not name or category not in ("industry", "concept"):
+            raise ValueError("Sector requires name and industry/concept category")
+        metrics = {}
+        for key, unit in (("change_pct", "%"), ("change_5d_pct", "%"),
+                          ("change_20d_pct", "%"), ("amount", currency),
+                          ("net_flow", currency)):
+            metrics[key] = field(key, read(item, key), unit,
+                                 source=string(read(item, "source")) or source,
+                                 trade_date=day(read(item, "trade_date")) or day(trade_date),
+                                 minimum=0 if key == "amount" else None)
+        groups.append(SectorPerformance(name, category, metrics))
+    return MarketFinancialData(market, MarketBreadth(market, values), tuple(groups))
