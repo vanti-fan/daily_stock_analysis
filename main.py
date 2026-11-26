@@ -1201,6 +1201,11 @@ def run_full_analysis(
                     "Market review context is reusable, "
                     "skipping duplicate market review and reusing context content."
                 )
+                from src.raw_data_archive import record as record_archive
+                record_archive('market', region=market_review_region,
+                               query_id=getattr(pipeline, 'query_id', None),
+                               payload={'region': market_review_region, 'markdown_report': market_report},
+                               reused=True)
                 _save_reused_market_review_report(
                     pipeline.notifier,
                     market_report,
