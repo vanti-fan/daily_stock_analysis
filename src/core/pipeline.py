@@ -4142,7 +4142,7 @@ class StockAnalysisPipeline:
             try:
                 from src.raw_data_archive import enabled as archive_enabled, archive_root
                 if archive_enabled():
-                    from src.data_quality_manager import build_report, attach_quality, write_report
+                    from src.data_quality_manager import build_report, attach_quality, write_report, unavailable_quality
                     try:
                         quality_rows = [dict(row, query_id=dashboard_query_ids.get(row['code'])) for row in self._financial_dashboard_rows]
                         quality = build_report(archive_root(), quality_rows)
@@ -4150,6 +4150,7 @@ class StockAnalysisPipeline:
                         self._financial_dashboard_rows = attach_quality(quality_rows, quality)
                     except Exception as exc:
                         logger.warning('Data quality assessment failed: %s', type(exc).__name__)
+                        self._financial_dashboard_rows = unavailable_quality(self._financial_dashboard_rows)
                 fd.save_status(self._financial_dashboard_rows)
             except OSError:
                 logger.exception("Unable to persist dashboard batch status")
