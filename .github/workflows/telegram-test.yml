@@ -96,6 +96,15 @@ jobs:
           assert write_index(root) == 3
           PY
 
+      - name: Run Phase 2.3 quality manager tests
+        run: |
+          python -m compileall -q src/data_quality_manager.py src/financial_dashboard.py src/core/pipeline.py
+          python -m unittest discover -s tests -p test_data_quality_manager.py -v
+
+      - name: Render four independent Phase 2.3 scenarios
+        run: |
+          PYTHONPATH=tests:. python -c "from test_data_quality_manager import render_scenarios; print(render_scenarios('image-test/phase23'))"
+
       - name: Render fixed-sample financial dashboards
         run: |
           python - <<'PY'
@@ -145,6 +154,12 @@ jobs:
               time.sleep(1.2)
           p=Path("image-test/watchlist-01.png")
           assert fd.send_file(notifier,p.name,p.read_bytes(),photo=True,caption="V0.2.1 自选股预览 / 固定样本")
+          # Send only the scenario watchlists and health overviews; full PNG sets stay in artifact.
+          for folder in sorted(Path("image-test/phase23").glob("*/")):
+              for name in ("watchlist-01.png","quality-overview.png"):
+                  p=folder/name
+                  assert fd.send_file(notifier,folder.name+"-"+p.name,p.read_bytes(),caption="固定样本 / 非实时行情 / "+folder.name), p.name
+                  time.sleep(1.2)
           print("Telegram HD document and preview delivery PASS")
           PY
 
