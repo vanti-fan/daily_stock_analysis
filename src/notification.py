@@ -2844,6 +2844,12 @@ class NotificationService(
             if ch.value in self._markdown_to_image_channels
             and ch not in {NotificationChannel.NTFY, NotificationChannel.GOTIFY}
         }
+        from src import financial_dashboard as fd
+        financial_market = (fd.enabled(self) and route_type == 'report'
+                            and NotificationChannel.TELEGRAM in target_channels
+                            and fd.is_market_report(content, structured_payload))
+        if financial_market:
+            channels_needing_image.discard(NotificationChannel.TELEGRAM)
         if channels_needing_image:
             from src.md2img import markdown_to_image
             image_bytes = markdown_to_image(
@@ -2881,14 +2887,17 @@ class NotificationService(
             channel_name = ChannelDetector.get_channel_name(channel)
             started_at = time.monotonic()
             try:
-                result = self._send_to_static_channel(
-                    channel,
-                    content,
-                    image_bytes=image_bytes,
-                    email_stock_codes=email_stock_codes,
-                    email_send_to_all=email_send_to_all,
-                    route_type=route_type,
-                )
+                if financial_market and channel == NotificationChannel.TELEGRAM:
+                    result = fd.send_market(self, content, structured_payload)
+                else:
+                    result = self._send_to_static_channel(
+                        channel,
+                        content,
+                        image_bytes=image_bytes,
+                        email_stock_codes=email_stock_codes,
+                        email_send_to_all=email_send_to_all,
+                        route_type=route_type,
+                    )
                 latency_ms = int((time.monotonic() - started_at) * 1000)
 
                 if result:
