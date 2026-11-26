@@ -78,6 +78,24 @@ jobs:
           python -m compileall -q src/financial_data_model.py src/financial_data_adapters.py
           python -m unittest discover -s tests -p test_financial_data_model.py -v
 
+      - name: Run Phase 2.2 raw archive tests
+        run: |
+          python -m compileall -q src/raw_data_archive.py src/core/market_review.py
+          python -m unittest discover -s tests -p test_raw_data_archive.py -v
+          python - <<'PY'
+          from pathlib import Path
+          from src.raw_data_archive import archive_inputs, archive_research, archive_market, write_index
+          root = Path("image-test/raw_data_fixture")
+          archive_inputs(root, code="002938", name="鹏鼎控股", market="cn", query_id="offline-fixture",
+              rows=[dict(code="002938", date="2026-11-26", open=47, high=47.41, low=45.2,
+                         close=45.8, volume=28849300, amount=1326000000, data_source="fixture")])
+          archive_research(root, code="002938", query_id="offline-fixture",
+                           result={"success":True,"model_used":"fixture","sentiment_score":58})
+          archive_market(root, region="cn", query_id="offline-fixture",
+                         payload={"region":"cn","markdown_report":"offline fixture"}, reused=True)
+          assert write_index(root) == 3
+          PY
+
       - name: Render fixed-sample financial dashboards
         run: |
           python - <<'PY'
