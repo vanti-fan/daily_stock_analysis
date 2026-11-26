@@ -25,7 +25,7 @@ from src.share_image import (
 logger = logging.getLogger(__name__)
 OUTPUT = Path("reports/dashboard")
 WIDTH, MAX_HEIGHT = 1080, 1800
-DASHBOARD_VERSION = "0.2-dev"
+DASHBOARD_VERSION = "0.2.1-dev"
 MISSING = "—"
 
 CSS = """
@@ -167,6 +167,141 @@ def save_status(rows, output=OUTPUT):
          "stocks":rows}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def report_for_code(report, code, fallback):
+    """Use the aggregate report's complete stock section, not its poster summary."""
+    starts = list(re.finditer(r"^##\s+.*$", report or "", re.M))
+    for i, match in enumerate(starts):
+        if re.search(r"(?<![A-Za-z0-9])" + re.escape(str(code)) + r"(?![A-Za-z0-9])", match.group()):
+            end = starts[i+1].start() if i+1 < len(starts) else len(report)
+            return report[match.start():end]
+    return fallback
+
+
+def raw_tables(markdown):
+    """Retain original table cell values and units."""
+    for t in _parse_tables(markdown or ""):
+        yield t.headers, t.raw_rows or t.rows
+
+
+def plain(value):
+    return re.sub(r"\s+", " ", str(value or "").replace("**", "").replace("\x60", "")).strip()
+
+
+def named_block(markdown, label):
+    """Read a bold-labeled block until the next label or heading."""
+    lines = (markdown or "").splitlines()
+    for i, line in enumerate(lines):
+        m = re.match(r"^\s*(?:[-*]\s+)?\*\*([^*]+)\*\*\s*[:：]\s*(.*)$", line)
+        if not m or label not in m.group(1):
+            continue
+        parts = [m.group(2)] if m.group(2) else []
+        for following in lines[i+1:]:
+            if re.match(r"^\s*(?:#{1,6}\s|---\s*$|(?:[-*]\s+)?\*\*[^*]+\*\*\s*[:：])", following):
+                break
+            if following.strip():
+                parts.append(re.sub(r"^\s*[-*]\s+", "", following))
+        return [plain(x) for x in parts if plain(x)]
+    return []
+
+
+def stock_fields(markdown):
+    fields = {}
+    for headers, rows in raw_tables(markdown):
+        if not rows:
+            continue
+        if {"收盘", "开盘", "最高", "最低"}.issubset(headers):
+            fields.update({k:plain(v) for k,v in zip(headers, rows[0])})
+        elif {"当前价", "量比", "换手率"}.issubset(headers):
+            fields.update({k:plain(v) for k,v in zip(headers, rows[0])})
+        elif "价格指标" in headers:
+            for row in rows:
+                if len(row)>=2:
+                    fields[plain(row[0])] = plain(row[1])
+    return fields
+
+
+def leading_price(value):
+    m = re.match(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*(?:元)?(?:\s*$|\s*[（(])", str(value or ""))
+    return float(m.group(1)) if m and float(m.group(1)) > 0 else None
+
+
+def ma_structure(fields):
+    values = [numeric(fields.get(k)) for k in ("MA5","MA10","MA20")]
+    if any(x is None or x <= 0 for x in values):
+        return "未取得完整均线数值，不能确认排列"
+    a,b,c = values
+    if a>b>c:
+        return "MA5 > MA10 > MA20（多头排列）"
+    if a<b<c:
+        return "MA5 < MA10 < MA20（空头排列）"
+    if a>b and b<=c:
+        return "弱势多头（未形成完整多头排列）"
+    if a<b and b>=c:
+        return "弱势空头（未形成完整空头排列）"
+    return "均线混合 / 持平"
+
+
+def trade_candidates(poster, markdown):
+    values = {k:v for k,v,_ in poster.sniper}
+    for headers, rows in raw_tables(markdown):
+        if "操作点位" not in headers:
+            continue
+        for row in rows:
+            if len(row)<2:
+                continue
+            for label,key in (("理想买入","理想买入"),("次优买入","确认买入"),("止损","止损"),("目标","目标")):
+                if label in row[0]:
+                    values[key] = plain(row[1])
+    stop = leading_price(values.get("止损"))
+    target = leading_price(values.get("目标"))
+    plans = []
+    for key,label in (("理想买入","理想买入"),("确认买入","次优买入")):
+        raw = values.get(key)
+        if not raw:
+            continue
+        entry = leading_price(raw)
+        if entry is None or stop is None or target is None:
+            status = "UNVERIFIED"
+        elif not stop < entry < target:
+            status = "INVALID"
+        else:
+            status = "VALID"
+        plans.append(dict(label=label,raw=raw,entry=entry,stop=stop,target=target,status=status,
+                          rr=(target-entry)/(entry-stop) if status=="VALID" else None))
+    return plans
+
+
+def trade_html(plans):
+    if not plans:
+        return '<p>未提供有效候选方案</p>'
+    parts = []
+    for p in plans:
+        parts.append('<h3>'+e(p["label"])+'</h3>')
+        if p["status"] != "VALID":
+            reason = "买入、止损或目标价存在多头顺序冲突" if p["status"]=="INVALID" else "价格缺失或无法唯一解析"
+            parts.append('<div class="notice">交易计划待核实：'+e(reason)+'，该方案不展示可执行点位。</div>')
+            continue
+        parts.append(grid([("候选入场",f'{p["entry"]:.2f}',""),("止损",f'{p["stop"]:.2f}',""),
+                           ("目标",f'{p["target"]:.2f}',""),("理论收益风险比",f'{p["rr"]:.2f}:1',"")]))
+    parts.append('<small>仅校验多头价格顺序；不代表入场确认，不含费用、滑点或跳空风险。原始点位见 Markdown。</small>')
+    return "".join(parts)
+
+
+def text_sections(pages, prefix, title, stamp, items, label):
+    """Bound page content; keep complete text in the original report."""
+    chunks = []
+    for heading, values in items:
+        for value in values:
+            value = plain(value)
+            for i in range(0, len(value), 180):
+                chunks.append((heading if i==0 else heading+"（续）",value[i:i+180]))
+    if not chunks:
+        return
+    for i in range(0,len(chunks),3):
+        body = "".join(section(heading,"<p>"+e(value)+"</p>") for heading,value in chunks[i:i+3])
+        pages.append((prefix+"-"+str(i//3+1).zfill(2),page(title,stamp,body,label)))
+
+
 def invalid_long_plan(poster):
     stop = numeric(value_for(poster.sniper, "止损"))
     target = numeric(value_for(poster.sniper, "目标"))
@@ -184,8 +319,8 @@ def stock_pages(notifier, rows, results, report):
         payload = result.to_dict()
         if not isinstance(payload, dict):
             raise ValueError("Expected structured stock result")
-        md = notifier.generate_single_stock_report(result)
-        by_code[str(result.code)] = _stock_data_from_payload(payload, md, date.today())
+        md = report_for_code(report, result.code, notifier.generate_single_stock_report(result))
+        by_code[str(result.code)] = (_stock_data_from_payload(payload, md, date.today()), md)
     success = sum(x["status"] == "SUCCESS" for x in rows)
     pages = []
     # Chunk watchlists so the document is readable even with more stocks.
@@ -195,20 +330,24 @@ def stock_pages(notifier, rows, results, report):
         ]))
         records = []
         for row in rows[offset:offset+6]:
-            p = by_code.get(row["code"])
-            records.append([row["name"]+" / "+row["code"],
+            item = by_code.get(row["code"])
+            p = item[0] if item else None
+            display_name = row["name"]+" / "+row["code"] if row["name"] != row["code"] else row["code"]
+            records.append([display_name,
                             value_for(p.snapshot,"现价") if p else MISSING,
                             percent(value_for(p.snapshot,"涨跌","涨跌幅")) if p else MISSING,
-                            p.score or MISSING if p else MISSING,
+                            (p.score if p.score not in ("", None) else MISSING) if p else MISSING,
                             p.action or "分析完成" if p else STATUS_LABEL.get(row["status"],"未完成")])
         body += section("自选股总览", table(["标的","价格","涨跌幅","评分","状态 / AI观点"], records,
                                           lambda i,v: change_class(v) if i==2 else ""))
         if success < len(rows):
             body += '<div class="notice">未完成标的不输出评分或交易点位；不得将缺失结果当作中性信号。</div>'
         pages.append(("watchlist-"+str(offset//6+1).zfill(2), page("自选股分析总览",stamp,body,"WATCHLIST")))
-    for code, p in by_code.items():
+    for code, (p, md) in by_code.items():
+        fields = stock_fields(md)
         snapshot = [(k,v,change_class(v) if k in ("涨跌","涨跌幅") else "") for k,v,_ in p.snapshot]
-        technical = [(k,v,"") for k,v,_ in p.technical[:6]]
+        technical = [(k,v,"") for k,v,_ in p.technical[:6] if k != "均线"]
+        technical.insert(0, ("均线", ma_structure(fields) if all(k in fields for k in ("MA5","MA10","MA20")) else "未取得完整数值", ""))
         body = section("核心判断", grid([("AI观点",p.action,""),("评分",p.score,""),("趋势",p.trend,"")])
                        + score_bar(p.score) + '<p style="margin-top:15px">'+e(p.conclusion)+'</p>')
         body += section("市场快照",grid(snapshot or [("行情","未提供","neutral")]))
@@ -218,17 +357,22 @@ def stock_pages(notifier, rows, results, report):
         title = p.title+" "+code
         pages.append(("stock-"+key+"-01",page(title,stamp,body,"STOCK / SNAPSHOT")))
         # Keep execution/risk separate; suppress unsafe numerical plans.
-        if invalid_long_plan(p):
-            execution = '<div class="notice">交易计划待核实：买入、止损或目标价存在多头顺序冲突，暂不展示可执行点位。</div>'
-        else:
-            execution = grid([(k,v,"") for k,v,_ in p.sniper]) if p.sniper else '<p>未提供有效点位</p>'
-            execution += '<p style="margin-top:12px">仅为原报告参考，未经过个人交易规则验证。</p>'
-        body = section("交易计划校验",execution)
+        plans = trade_candidates(p, md)
+        body = section("交易计划校验",trade_html(plans))
         body += section("观察条件",bullets([k+"："+v for k,v,_ in p.watch_items],76))
-        body += section("风险与数据限制",bullets(p.risks[:2],90))
-        body += section("持仓观察",bullets([("未持仓："+p.no_position) if p.no_position else "",
-                                             ("已持仓："+p.has_position) if p.has_position else ""],76))
         pages.append(("stock-"+key+"-02",page(title,stamp,body,"STOCK / RISK")))
+        if fields:
+            labels = ("收盘","昨收","开盘","最高","最低","涨跌幅","涨跌额","振幅","成交量","成交额","量比","换手率","行情来源","MA5","MA10","MA20","乖离率(MA5)","支撑位","压力位")
+            for offset in range(0,len(labels),10):
+                rows_detail = [[k,fields.get(k,MISSING)] for k in labels[offset:offset+10]]
+                body = section("原报告行情及指标",table(["字段","数值 / 单位"],rows_detail))
+                body += '<div class="notice">来源：原始报告行情及技术表；未归档的历史序列不作推算。</div>'
+                pages.append(("stock-"+key+"-data-"+str(offset//10+1).zfill(2),page(title,stamp,body,"STOCK / DATA")))
+        risks = named_block(md,"风险警报")
+        catalysts = named_block(md,"利好催化")
+        limits = named_block(md,"数据限制")
+        extra = [("风险警报",risks),("利好催化",catalysts),("数据限制",limits),("业绩预期",named_block(md,"业绩预期")),("最新动态",named_block(md,"最新动态")),("舆情情绪",named_block(md,"舆情情绪")),("置信度理由",named_block(md,"置信度理由")),("仓位及策略",named_block(md,"仓位建议")),("信号归因（AI）",named_block(md,"归因权重")),("关联板块",[_section(md,"关联板块")] if _section(md,"关联板块") else []),("持仓观察",[( "未持仓："+p.no_position) if p.no_position else "",("已持仓："+p.has_position) if p.has_position else ""])]
+        text_sections(pages,"stock-"+key+"-research",title,stamp,extra,"STOCK / RESEARCH")
     return pages
 
 
@@ -274,8 +418,8 @@ def market_pages(content, payload=None):
     body += section("主要指数",table(["指数","点位","涨跌幅"],indices[:8],lambda i,v: change_class(v) if i==2 else ""))
     breadth = [] if unavailable else [(k,v,"") for k,v,_ in p.breadth]
     body += section("市场宽度",grid(breadth[:6]) if breadth else '<p class="neutral">未取得有效市场宽度 / 成交额数据</p>')
-    if unavailable:
-        body += '<div class="notice">原报告提示市场统计存在缺失，不以缺失值推断市场情绪。</div>'
+    if unavailable or not breadth:
+        body += '<div class="notice">市场统计数据未完整提供；市场评分为原报告模型观点，不代表完整市场宽度。</div>'
     pages.append(("market-01",page("A股市场总览",stamp,body,"MARKET / OVERVIEW")))
     leaders = sector_groups[0] if sector_groups else [(n,percent(c)) for n,c,_ in p.sectors]
     laggards = sector_groups[1] if len(sector_groups)>1 else [(n,percent(c)) for n,c,_ in p.laggards]
@@ -298,6 +442,18 @@ def market_pages(content, payload=None):
     body += section("消息催化",bullets(p.catalysts,85))
     body += section("风险与数据边界",bullets(p.risks or [compact(_section(content,"风险提示"),130)],100))
     pages.append(("market-03",page("市场观察与风险",stamp,body,"MARKET / OUTLOOK")))
+    # Additional detail only when present in the real source; preserve full units.
+    for headers, source_rows in raw_tables(content):
+        if {"指数","开盘","最高","最低"}.issubset(headers):
+            cols = [k for k in ("指数","开盘","最高","最低","振幅","成交额(亿)") if k in headers]
+            ix = [headers.index(k) for k in cols]
+            details = [[plain(row[j]) if j<len(row) else MISSING for j in ix] for row in source_rows]
+            body = section("指数详细行情",table(cols,details))
+            body += '<div class="notice">各指数成交额并非互斥口径，不直接相加作为全市场成交额。</div>'
+            pages.append(("market-index-detail",page("指数详细行情",stamp,body,"MARKET / DATA")))
+            break
+    if any(k in content for k in ("### 五、消息催化","### 六、明日交易计划")):
+        text_sections(pages,"market-research","市场研究详情",stamp,[(k,[_section(content,k)]) for k in ("资金与情绪","消息催化","明日交易计划","风险提示","数据边界") if _section(content,k)],"MARKET / RESEARCH")
     return pages
 
 
