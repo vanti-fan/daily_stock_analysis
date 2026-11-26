@@ -10,7 +10,7 @@ permissions:
 jobs:
   telegram-image-test:
     if: ${{ github.ref == 'refs/heads/feature/telegram-dashboard-v1' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     environment: STOCK_LIST
     timeout-minutes: 15
 
