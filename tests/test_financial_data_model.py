@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 
 from src.financial_data_model import StockIdentity, DataStatus, Origin
-from src.financial_data_adapters import build_stock_data, history_fields, quote_fields, chip_fields, technical_fields
+from src.financial_data_adapters import build_stock_data, history_fields, quote_fields, chip_fields, technical_fields, build_market_data
 
 
 class FinancialModelTests(unittest.TestCase):
@@ -86,6 +86,17 @@ class FinancialModelTests(unittest.TestCase):
             quote_fields(dict(self.quote,currency="USD"),self.identity)
         with self.assertRaises(ValueError):
             StockIdentity(2938)
+
+    def test_market_breadth_and_sector_units(self):
+        m = build_market_data("cn", breadth={"advancing":0,"declining":1234,"unchanged":1.5},
+                              sectors=[{"name":"PCB","category":"concept","change_pct":2.5}],
+                              currency="CNY",source="fixture",trade_date="2026-11-26")
+        self.assertEqual(m.breadth.fields["advancing"].value,0)
+        self.assertIsNone(m.breadth.fields["amount"].value)
+        self.assertEqual(m.breadth.fields["unchanged"].quality.status,DataStatus.INVALID)
+        self.assertEqual(m.sectors[0].fields["change_pct"].unit,"%")
+        self.assertIsNone(m.sectors[0].fields["change_5d_pct"].value)
+        self.assertEqual(m.to_dict()["market"],"cn")
 
     def test_empty_inputs_and_strict_json(self):
         model=build_stock_data(self.identity)
