@@ -1214,8 +1214,10 @@ def run_full_analysis(
                     and not args.no_notify
                     and pipeline.notifier.is_available()
                 ):
+                    from src.core.market_review import _market_review_region_metadata
+                    region_metadata = _market_review_region_metadata(market_review_region)
                     if pipeline.notifier.send(
-                        f"# 📈 大盘复盘\n\n{market_report}",
+                        f"# 📈 大盘复盘\n\n{region_metadata}{market_report}",
                         email_send_to_all=True,
                         route_type="report",
                     ):
