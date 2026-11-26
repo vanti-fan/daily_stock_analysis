@@ -859,6 +859,9 @@ class StockAnalysisPipeline:
 
             # Step 3: 趋势分析（基于交易理念）— 在 Agent 分支之前执行，供两条路径共用
             trend_result: Optional[TrendAnalysisResult] = None
+            archive_rows = None
+            archive_sample_count = None
+            archive_trade_date = None
             try:
                 from src.services.history_loader import get_frozen_target_date
                 _mkt = get_market_for_stock(normalize_stock_code(code))
@@ -867,12 +870,15 @@ class StockAnalysisPipeline:
                 start_date = end_date - timedelta(days=89)  # ~60 trading days for MA60
                 historical_bars = self.db.get_data_range(code, start_date, end_date)
                 if historical_bars:
-                    df = pd.DataFrame([bar.to_dict() for bar in historical_bars])
+                    archive_rows = [bar.to_dict() for bar in historical_bars]
+                    df = pd.DataFrame(archive_rows)
                     # Issue #234: Augment with realtime for intraday MA calculation
                     if self.config.enable_realtime_quote and realtime_quote:
                         df = self._augment_historical_with_realtime(
                             df, realtime_quote, code, market=market
                         )
+                    archive_sample_count = len(df)
+                    archive_trade_date = str(df['date'].max())[:10] if 'date' in df else None
                     trend_result = self.trend_analyzer.analyze(df, code)
                     logger.info(
                         f"{log_stock_name}({code}) trend analysis: {trend_result.trend_status.name}, "
@@ -880,6 +886,14 @@ class StockAnalysisPipeline:
                     )
             except Exception as e:
                 logger.warning(f"{log_stock_name}({code}) trend analysis failed: {e}", exc_info=True)
+
+            if not _is_current_stock_cancelled():
+                from src.raw_data_archive import record as record_archive
+                record_archive('inputs', code=code, name=stock_name, market=market,
+                               query_id=query_id, rows=archive_rows, quote=realtime_quote,
+                               trend=trend_result, trend_input_count=archive_sample_count,
+                               trend_trade_date=archive_trade_date, chip=chip_data,
+                               fundamental=fundamental_context)
 
             if use_agent:
                 logger.info(f"{log_stock_name}({code}) enabling Agent mode for analysis")
@@ -3830,6 +3844,9 @@ class StockAnalysisPipeline:
             if analysis_target is not None:
                 analyze_kwargs["analysis_target"] = analysis_target
             result = self.analyze_stock(code, report_type, **analyze_kwargs)
+            if not _is_current_stock_cancelled():
+                from src.raw_data_archive import record as record_archive
+                record_archive('research', code=code, query_id=effective_query_id, result=result)
             if _is_current_stock_cancelled():
                 logger.warning("[%s] Cancelled due to timeout, discarding analysis result", code)
                 return None
