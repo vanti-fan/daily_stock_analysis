@@ -123,7 +123,7 @@ def publish(root, *, kind, query_id, identity, files, metadata=None):
 
 def archive_inputs(root, *, code, name, market, query_id, rows=None, quote=None,
                    trend=None, trend_input_count=None, trend_trade_date=None,
-                   chip=None, fundamental=None):
+                   chip=None, fundamental=None, expected_trade_date=None):
     raw_rows = [project(row,HISTORY_KEYS) for row in (rows if rows is not None else [])]
     sources = sorted({r["data_source"] for r in raw_rows if r.get("data_source")})
     currency = string(read(quote,"currency")) or {
@@ -144,6 +144,7 @@ def archive_inputs(root, *, code, name, market, query_id, rows=None, quote=None,
     metadata = {"history_count":len(raw_rows),"history_sources":sources,
                 "history_origin":"stored_daily_bars_before_realtime_augmentation",
                 "history_adjustment":None,"volume_unit":"share","amount_unit":currency,
+                "expected_trade_date":expected_trade_date,
                 "availability":{"history":bool(raw_rows),"quote":quote is not None,
                                 "technical":trend is not None,"chip":chip is not None,
                                 "fundamental":fundamental is not None}}
