@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   analyze:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # 兼容误将 STOCK_LIST 配到同名 Environment variables 的场景；
     # 推荐位置仍是 Settings -> Secrets and variables -> Actions -> Repository variables。
     environment: STOCK_LIST
@@ -56,25 +56,44 @@ jobs:
           pip install -r requirements.txt
           python -c "import futu; print('✅ futu SDK import OK')"
       
+      - name: 设置 Node.js 环境
+        if: ${{ github.ref == 'refs/heads/feature/telegram-dashboard-v1' && vars.MARKDOWN_TO_IMAGE_CHANNELS != '' }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
       - name: 安装图片渲染依赖
         if: ${{ github.ref == 'refs/heads/feature/telegram-dashboard-v1' && vars.MARKDOWN_TO_IMAGE_CHANNELS != '' }}
         run: |
-          echo "Installing image rendering dependencies..."
-          sudo apt-get update
-          sudo apt-get install -y wkhtmltopdf fonts-noto-cjk fontconfig
+          echo "Checking operating system..."
+          cat /etc/os-release
 
-          echo "Checking rendering engine..."
-          wkhtmltoimage --version
+          echo "Checking Node.js environment..."
+          node --version
+          npm --version
+
+          echo "Installing Playwright..."
+          npm install -g playwright@1.65.1
+
+          echo "Installing Chromium and system dependencies..."
+          playwright install --with-deps chromium
+
+          echo "Installing Chinese fonts..."
+          sudo apt-get update
+          sudo apt-get install -y fonts-noto-cjk fontconfig
+          fc-cache -f
+
+          echo "Checking Playwright CLI..."
+          command -v playwright
+          playwright --version
 
           echo "Checking Chinese fonts..."
           fc-match "Noto Sans CJK SC"
 
-          echo "Checking Python dependencies..."
-          python -c "import markdown2, imgkit; print('Python rendering dependencies OK')"
+          echo "Checking Python rendering dependencies..."
+          python -c "import markdown2; print('Python rendering dependencies OK')"
 
-          echo "QT_QPA_PLATFORM=offscreen" >> "$GITHUB_ENV"
-
-          echo "Image rendering dependencies installed successfully."
+          echo "Playwright rendering dependencies installed successfully."
 
       - name: 创建必要目录
         run: |
@@ -387,7 +406,7 @@ jobs:
 
           # Telegram 图片推送配置 - Dashboard V0.1
           MARKDOWN_TO_IMAGE_CHANNELS: ${{ github.ref == 'refs/heads/feature/telegram-dashboard-v1' && vars.MARKDOWN_TO_IMAGE_CHANNELS || '' }}
-          MD2IMG_ENGINE: ${{ vars.MD2IMG_ENGINE || 'wkhtmltoimage' }}
+          MD2IMG_ENGINE: ${{ vars.MD2IMG_ENGINE || 'playwright' }}
           MARKDOWN_TO_IMAGE_MAX_CHARS: ${{ vars.MARKDOWN_TO_IMAGE_MAX_CHARS || '15000' }}
           
           # 方式四：邮件
