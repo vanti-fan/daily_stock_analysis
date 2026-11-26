@@ -189,12 +189,12 @@ def stock_pages(notifier, rows, results, report):
     success = sum(x["status"] == "SUCCESS" for x in rows)
     pages = []
     # Chunk watchlists so the document is readable even with more stocks.
-    for offset in range(0, len(rows), 8):
+    for offset in range(0, len(rows), 6):
         body = section("执行覆盖率", grid([
             ("计划标的",len(rows),""),("成功",success,"ok"),("未完成",len(rows)-success,"warn")
         ]))
         records = []
-        for row in rows[offset:offset+8]:
+        for row in rows[offset:offset+6]:
             p = by_code.get(row["code"])
             records.append([row["name"]+" / "+row["code"],
                             value_for(p.snapshot,"现价") if p else MISSING,
@@ -205,7 +205,7 @@ def stock_pages(notifier, rows, results, report):
                                           lambda i,v: change_class(v) if i==2 else ""))
         if success < len(rows):
             body += '<div class="notice">未完成标的不输出评分或交易点位；不得将缺失结果当作中性信号。</div>'
-        pages.append(("watchlist-"+str(offset//8+1).zfill(2), page("自选股分析总览",stamp,body,"WATCHLIST")))
+        pages.append(("watchlist-"+str(offset//6+1).zfill(2), page("自选股分析总览",stamp,body,"WATCHLIST")))
     for code, p in by_code.items():
         snapshot = [(k,v,change_class(v) if k in ("涨跌","涨跌幅") else "") for k,v,_ in p.snapshot]
         technical = [(k,v,"") for k,v,_ in p.technical[:6]]
@@ -232,11 +232,22 @@ def stock_pages(notifier, rows, results, report):
     return pages
 
 
-def is_market_report(content):
-    headings = re.findall(r"^#{1,2}\s+(.+)$", content or "", re.M)
-    # Only the established A-share/Chinese single-market format is customized.
-    return bool(headings and "大盘复盘" in headings[0]
-                and not any("个股决策仪表盘" in h for h in headings)
+def is_market_report(content, payload=None):
+    """Only customize the supported Chinese A-share single-market report."""
+    content = content or ""
+    region = str(payload.get("region") or "").lower() if isinstance(payload, dict) else ""
+    if region and region != "cn":
+        return False
+    if isinstance(payload, dict) and payload.get("markets"):
+        return False
+    headings = re.findall(r"^#{1,2}\s+(.+)$", content, re.M)
+    metadata = re.search(r"^\[dsa-market-region\]:\s+#\s+\(\s*([a-z,]+)\s*\)", content, re.M | re.I)
+    if metadata and metadata.group(1).lower() != "cn":
+        return False
+    if any(x in content for x in ("美股大盘复盘", "港股大盘复盘", "日股大盘复盘", "韩股大盘复盘", "台股大盘复盘", "个股决策仪表盘")):
+        return False
+    return bool(("大盘复盘" in content[:300] or any("大盘复盘" in h for h in headings[:2]))
+                and (region == "cn" or metadata or "A股" in content[:500])
                 and "指数结构" in content and "板块主线" in content)
 
 
@@ -261,7 +272,7 @@ def market_pages(content, payload=None):
     body = section("市场状态",grid([("市场评分",p.score,""),("温度",p.temperature,""),("信号",p.signal,"")])
                    + score_bar(p.score) + '<p style="margin-top:15px">'+e(p.guidance or p.summary)+'</p>')
     body += section("主要指数",table(["指数","点位","涨跌幅"],indices[:8],lambda i,v: change_class(v) if i==2 else ""))
-    breadth = [(k,v,"") for k,v,_ in p.breadth if not (unavailable and numeric(v)==0)]
+    breadth = [] if unavailable else [(k,v,"") for k,v,_ in p.breadth]
     body += section("市场宽度",grid(breadth[:6]) if breadth else '<p class="neutral">未取得有效市场宽度 / 成交额数据</p>')
     if unavailable:
         body += '<div class="notice">原报告提示市场统计存在缺失，不以缺失值推断市场情绪。</div>'
@@ -368,6 +379,9 @@ def send_file(notifier, filename, data, *, photo=False, caption=""):
 def deliver(notifier, pages, report, label, status=""):
     fallback=(status+"\n\n" if status else "")+report
     try:
+        OUTPUT.mkdir(parents=True, exist_ok=True)
+        if report.strip():
+            (OUTPUT/(label+"-full-report.md")).write_text(report, encoding="utf-8")
         paths=render_pages(pages)
         # Preview first overview; every original is separately available without photo compression.
         send_file(notifier,paths[0].name,paths[0].read_bytes(),photo=True,caption=label+" · 预览")
@@ -402,3 +416,17 @@ def send_market(notifier, report, payload):
         logger.warning("Market dashboard build failed (%s)",type(exc).__name__)
         return bool(notifier.send_to_telegram(report))
     return deliver(notifier,pages,report,"market")
+
+
+def notify_status_only(notifier, rows):
+    """Status notification for zero results and non-aggregate modes; honor routing."""
+    if not rows or not notifier.is_available():
+        return False
+    if not notifier.should_broadcast_static_channels():
+        return bool(notifier.send(status_text(rows), route_type="report"))
+    channels = notifier.get_channels_for_route("report", channels=notifier.get_available_channels())
+    if not any(getattr(ch, "value", None) == "telegram" for ch in channels):
+        return False
+    return send_batch(notifier, rows, [], "") if all(
+        r["status"] != "SUCCESS" for r in rows
+    ) else bool(notifier.send_to_telegram(status_text(rows)))
