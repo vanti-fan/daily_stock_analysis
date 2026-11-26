@@ -4,25 +4,175 @@ name: Telegram Connection Test
 on:
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
-  telegram-test:
+  telegram-image-test:
+    if: ${{ github.ref == 'refs/heads/feature/telegram-dashboard-v1' }}
     runs-on: ubuntu-latest
     environment: STOCK_LIST
-    timeout-minutes: 2
+    timeout-minutes: 15
 
     steps:
-      - name: Validate Telegram API
+      - name: Checkout development branch
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -c "import markdown2, imgkit, requests; print('Python dependencies OK')"
+
+      - name: Install image rendering dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wkhtmltopdf fonts-noto-cjk fontconfig
+
+          wkhtmltoimage --version
+          fc-match "Noto Sans CJK SC"
+
+          echo "QT_QPA_PLATFORM=offscreen" >> "$GITHUB_ENV"
+
+      - name: Generate test dashboard
+        env:
+          MARKDOWN_TO_IMAGE_CHANNELS: ${{ vars.MARKDOWN_TO_IMAGE_CHANNELS }}
+          MD2IMG_ENGINE: ${{ vars.MD2IMG_ENGINE || 'wkhtmltoimage' }}
+          MARKDOWN_TO_IMAGE_MAX_CHARS: ${{ vars.MARKDOWN_TO_IMAGE_MAX_CHARS || '15000' }}
+        run: |
+          python - <<'PY'
+          import os
+          import time
+          import struct
+          import logging
+          from pathlib import Path
+
+          from src.md2img import markdown_to_image
+
+          logging.basicConfig(level=logging.INFO)
+
+          output = Path("image-test")
+          output.mkdir(exist_ok=True)
+
+          report = """
+          # 每日股票分析 - 图片推送测试
+
+          **Telegram Dashboard V0.1**
+
+          本报告使用固定测试数据，不代表实时行情。
+
+          ## 自选股总览
+
+          | 股票代码 | 股票名称 | 测试价格 | 涨跌幅 | 评分 | 状态 |
+          | --- | --- | ---: | ---: | ---: | --- |
+          | 002938 | 鹏鼎控股 | 45.80 | -0.87% | 58 | 观望 |
+          | 300394 | 天孚通信 | 133.99 | +2.38% | 52 | 观望 |
+          | 300006 | 莱美药业 | 8.00 | -7.94% | 31 | 减仓 |
+          | 601958 | 金钼股份 | 14.73 | +0.61% | -- | 分析未完成 |
+
+          ## 数据完整性
+
+          - 历史行情：4/4
+          - 实时行情：4/4
+          - AI分析：3/4
+          - 筹码分布：0/4
+
+          ## 测试说明
+
+          - 验证中文字体是否正常显示。
+          - 验证表格排版及图片清晰度。
+          - 验证 Telegram 图片推送。
+          - 以上数据及建议仅用于功能测试。
+
+          ---
+
+          Daily Stock Analysis | Dashboard V0.1
+          """
+
+          from textwrap import dedent
+
+          report = dedent(report).strip()
+
+          (output / "test-report.md").write_text(
+              report, encoding="utf-8"
+          )
+
+          engine = os.getenv("MD2IMG_ENGINE", "")
+          max_chars = int(
+              os.getenv("MARKDOWN_TO_IMAGE_MAX_CHARS", "15000")
+          )
+          channels = os.getenv("MARKDOWN_TO_IMAGE_CHANNELS", "")
+
+          print("Rendering engine:", engine)
+          print("Image channels:", channels)
+          print("Markdown length:", len(report))
+          print("Maximum characters:", max_chars)
+
+          if engine != "wkhtmltoimage":
+              raise SystemExit("Unexpected rendering engine")
+
+          if "telegram" not in channels.lower().split(","):
+              raise SystemExit("Telegram image channel not enabled")
+
+          start = time.monotonic()
+
+          image = markdown_to_image(
+              report,
+              max_chars=max_chars
+          )
+
+          if not image:
+              raise SystemExit("FAIL: PNG rendering returned no data")
+
+          if (
+              len(image) < 24
+              or image[:8] != b"\x89PNG\r\n\x1a\n"
+              or image[12:16] != b"IHDR"
+          ):
+              raise SystemExit("FAIL: Invalid PNG format")
+
+          width, height = struct.unpack(">II", image[16:24])
+
+          path = output / "telegram-dashboard-test.png"
+          path.write_bytes(image)
+
+          print("PNG rendering successful")
+          print("Image dimensions:", width, "x", height)
+          print("Image size:", len(image), "bytes")
+          print("Rendering seconds:", round(time.monotonic() - start, 2))
+
+          if width <= 0 or height <= 0:
+              raise SystemExit("FAIL: Invalid image dimensions")
+
+          if len(image) > 10_000_000:
+              raise SystemExit("FAIL: Image exceeds Telegram size limit")
+
+          if width + height > 10000:
+              raise SystemExit("FAIL: Image dimensions exceed Telegram limit")
+
+          if max(width, height) / min(width, height) > 20:
+              raise SystemExit("FAIL: Image aspect ratio exceeds Telegram limit")
+
+          print("PNG validation: PASS")
+          PY
+
+      - name: Send dashboard to Telegram
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python3 - <<'PY'
+          python - <<'PY'
           import os
-          import json
-          import urllib.request
-          import urllib.error
+          import requests
+          from pathlib import Path
 
           token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
           chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
@@ -31,47 +181,59 @@ jobs:
           print("Chat ID configured:", bool(chat_id))
 
           if not token or not chat_id:
-              raise SystemExit("Missing Telegram configuration")
+              raise SystemExit("FAIL: Missing Telegram configuration")
 
-          base = f"https://api.telegram.org/bot{token}"
+          image_path = Path(
+              "image-test/telegram-dashboard-test.png"
+          )
 
-          def request_api(method, payload=None):
-              data = (
-                  json.dumps(payload).encode()
-                  if payload is not None else None
-              )
-              req = urllib.request.Request(
-                  f"{base}/{method}",
-                  data=data,
-                  headers={"Content-Type": "application/json"}
-              )
+          if not image_path.is_file():
+              raise SystemExit("FAIL: Image file missing")
 
-              try:
-                  with urllib.request.urlopen(req, timeout=15) as response:
-                      result = json.load(response)
-                      print(f"{method}: HTTP {response.status}")
-                      return result
-              except urllib.error.HTTPError as e:
-                  print(f"{method}: HTTP {e.code}")
-                  raise SystemExit(1)
-              except Exception as e:
-                  print("Connection error:", type(e).__name__)
-                  raise SystemExit(1)
+          try:
+              with image_path.open("rb") as image:
+                  response = requests.post(
+                      f"https://api.telegram.org/bot{token}/sendPhoto",
+                      data={
+                          "chat_id": chat_id,
+                          "caption": (
+                              "Daily Stock Analysis\n"
+                              "Dashboard V0.1 - 图片推送测试\n"
+                              "固定测试数据，非实时行情"
+                          )
+                      },
+                      files={
+                          "photo": (
+                              image_path.name,
+                              image,
+                              "image/png"
+                          )
+                      },
+                      timeout=60
+                  )
 
-          bot = request_api("getMe")
+              print("Telegram HTTP Status:", response.status_code)
 
-          if not bot.get("ok"):
-              raise SystemExit("Bot authentication failed")
+              result = response.json()
 
-          print("Bot username:", bot["result"]["username"])
+              if response.status_code != 200 or not result.get("ok"):
+                  raise SystemExit("FAIL: Telegram image delivery failed")
 
-          result = request_api("sendMessage", {
-              "chat_id": chat_id,
-              "text": "Daily Stock Analysis: GitHub Telegram Test Successful!"
-          })
+              print("Telegram sendPhoto: PASS")
+              print("Dashboard image sent successfully")
 
-          if not result.get("ok"):
-              raise SystemExit("Telegram delivery failed")
-
-          print("Telegram delivery successful.")
+          except requests.RequestException as e:
+              print("Connection error:", type(e).__name__)
+              raise SystemExit(1)
+          except ValueError:
+              raise SystemExit("FAIL: Invalid Telegram response")
           PY
+
+      - name: Upload image test artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-image-test-${{ github.run_number }}
+          path: image-test/
+          if-no-files-found: warn
+          retention-days: 7
