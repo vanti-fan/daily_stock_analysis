@@ -251,6 +251,7 @@ class _DaemonThreadStockExecutor:
             if future.done():
                 return
             token.request_cancel()
+        future.dashboard_timed_out = True
         logger.warning(
             "[%s] Single-stock analysis timed out (%ss); "
             "marked cancelled and keeping execution slot until thread exits",
@@ -3922,6 +3923,10 @@ class StockAnalysisPipeline:
             logger.error("Watchlist not configured; please set STOCK_LIST in .env")
             return []
         
+        from src import financial_dashboard as fd
+        dashboard_enabled = fd.enabled(self.notifier) and not dry_run
+        requested_codes = list(stock_codes)
+        dashboard_failures = {}
         # 过滤 unsupported 目标并按 canonical identity 去重，均发生在
         # prefetch/provider 调用前；无结构化 target 的旧入口保持原行为。
         if analysis_targets is not None:
@@ -3932,6 +3937,7 @@ class StockAnalysisPipeline:
             seen_identities = set()
             for code, target in zip(stock_codes, analysis_targets):
                 if target is not None and target.asset_type == ParseStatus.UNSUPPORTED:
+                    dashboard_failures[str(code)] = "UNSUPPORTED"
                     logger.warning(
                         "Skipping unsupported target %r (%s), no network request triggered",
                         code,
@@ -3953,6 +3959,11 @@ class StockAnalysisPipeline:
             analysis_targets = supported_targets
             if not stock_codes:
                 logger.warning("All targets in batch are unsupported; no tasks to execute")
+                if dashboard_enabled:
+                    rows = fd.batch_status(requested_codes, [], dashboard_failures)
+                    fd.save_status(rows)
+                    if send_notification:
+                        fd.notify_status_only(self.notifier, rows)
                 return []
 
         logger.info(f"===== Starting analysis for {len(stock_codes)} stocks =====")
@@ -4054,10 +4065,14 @@ class StockAnalysisPipeline:
                                     fallback_code=code,
                                 )
                         elif result and not result.success:
+                            dashboard_failures[str(code)] = "FAILED"
                             logger.warning(
                                 f"[{code}] Analysis result marked as failed, excluded from summary: "
                                 f"{result.error_message or 'unknown reason'}"
                             )
+
+                        if result is None:
+                            dashboard_failures[str(code)] = "TIMEOUT" if getattr(future, "dashboard_timed_out", False) else "INCOMPLETE"
 
                         # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
                         if completed_count < len(stock_codes) and analysis_delay > 0:
@@ -4065,6 +4080,7 @@ class StockAnalysisPipeline:
                             time.sleep(analysis_delay)
 
                     except Exception as e:
+                        dashboard_failures[str(code)] = "ERROR"
                         logger.error(f"[{code}] Task execution failed: {e}")
 
         finally:
@@ -4100,6 +4116,19 @@ class StockAnalysisPipeline:
         logger.info("===== Analysis completed =====")
         logger.info(f"Succeeded: {success_count}, failed: {fail_count}, elapsed: {elapsed_time:.2f}s")
         
+        self._financial_dashboard_rows = None
+        if dashboard_enabled:
+            self._financial_dashboard_rows = fd.batch_status(requested_codes, results, dashboard_failures)
+            try:
+                fd.save_status(self._financial_dashboard_rows)
+            except OSError:
+                logger.exception("Unable to persist dashboard batch status")
+            if send_notification and (not results or single_stock_notify or merge_notification):
+                try:
+                    fd.notify_status_only(self.notifier, self._financial_dashboard_rows)
+                except Exception:
+                    logger.exception("Dashboard status notification failed")
+
         # 保存报告到本地文件（无论是否推送通知都保存）
         if results and not dry_run:
             self._save_local_report(results, report_type)
@@ -4553,6 +4582,10 @@ class StockAnalysisPipeline:
                         )
                     elif channel == NotificationChannel.TELEGRAM:
                         def _send_telegram_report() -> bool:
+                            from src import financial_dashboard as fd
+                            rows = getattr(self, "_financial_dashboard_rows", None)
+                            if rows and fd.enabled(self.notifier):
+                                return fd.send_batch(self.notifier, rows, results, report)
                             use_image = self.notifier._should_use_image_for_channel(
                                 channel, image_bytes
                             )
