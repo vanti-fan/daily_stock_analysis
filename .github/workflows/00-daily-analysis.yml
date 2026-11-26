@@ -404,7 +404,8 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
 
-          # Telegram 图片推送配置 - Dashboard V0.1
+          # Telegram 图片推送配置 - Dashboard V0.2 (development only)
+          DSA_FINANCIAL_DASHBOARD: ${{ github.ref == 'refs/heads/feature/telegram-dashboard-v1' && (vars.DSA_FINANCIAL_DASHBOARD || 'true') || 'false' }}
           MARKDOWN_TO_IMAGE_CHANNELS: ${{ github.ref == 'refs/heads/feature/telegram-dashboard-v1' && vars.MARKDOWN_TO_IMAGE_CHANNELS || '' }}
           MD2IMG_ENGINE: ${{ vars.MD2IMG_ENGINE || 'playwright' }}
           MARKDOWN_TO_IMAGE_MAX_CHARS: ${{ vars.MARKDOWN_TO_IMAGE_MAX_CHARS || '15000' }}
