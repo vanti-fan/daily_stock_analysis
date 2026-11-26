@@ -310,11 +310,59 @@ def invalid_long_plan(poster):
                                   (target is not None and target <= x)) for x in entries)
 
 
+def quality_metric(field, key):
+    if not field.get("usable"):
+        return MISSING
+    v = field["value"]
+    if key in ("change_pct","turnover_rate","amplitude"):
+        return f"{v:+.2f}%" if key=="change_pct" else f"{v:.2f}%"
+    if key in ("volume","amount"):
+        unit=field.get("unit") or ""
+        return f"{v/10000:,.2f} 万{unit}"
+    return f"{v:,.2f}"
+
+
+def quality_pages(rows, stamp, *, scenario=None):
+    from src.data_quality_manager import source_coverage
+    stocks=[r["data_quality"] for r in rows if "data_quality" in r]
+    if not stocks:
+        return []
+    label="DATA QUALITY / "+(scenario or "CURRENT RUN")
+    body=section("数据质量概览",grid([
+        ("计划标的",len(rows),""),
+        ("有效价格",sum(bool(s.get("groups",{}).get("snapshot",{}).get("price",{}).get("usable")) for s in stocks),""),
+        ("AI已归档完成",sum(s.get("ai_status")=="SUCCESS" for s in stocks),"")]))
+    body+=section("统计边界","<p>字段覆盖率不是接口请求成功率。缺失字段不代表供应商故障；未取得独立数据时不声明交叉验证。</p>")
+    if scenario:
+        body+=section("测试声明","<p>固定样本 / 非实时行情 · "+e(scenario)+"</p>")
+    pages=[("quality-overview",page("数据源健康度",stamp,body,label))]
+    records=[]
+    for x in source_coverage(stocks):
+        records.append([x["source"],{"snapshot":"行情","technical":"技术计算","chips":"筹码"}.get(x["category"],x["category"]),
+                        f'{x["usable"]}/{x["expected"]}',f'{x["coverage"]:.0%}' if x["coverage"] is not None else MISSING])
+    if not records:
+        records=[["UNKNOWN","无有效归档",MISSING,MISSING]]
+    for i in range(0,len(records),8):
+        body=section("已归档字段覆盖率",table(["来源","类别","有效/总数","覆盖率"],records[i:i+8]))
+        body+=section("说明","<p>UNKNOWN 表示来源未记录，不等同于供应商失败。技术计算不是外部接口。</p>")
+        pages.append(("quality-sources-"+str(i//8+1).zfill(2),page("数据来源与覆盖率",stamp,body,label)))
+    for i in range(0,len(stocks),6):
+        rec=[[x["code"],x.get("quote_status"),x.get("history",{}).get("status"),x.get("ai_status"),x.get("batch_status")] for x in stocks[i:i+6]]
+        body=section("标的状态",table(["代码","行情","日线","AI归档","任务"],rec))
+        body+=section("状态定义","<p>NOT_COMPLETED：未完成；UNVERIFIED：未核实；STALE：过期；PARTIAL：部分有效。</p>")
+        pages.append(("quality-stocks-"+str(i//6+1).zfill(2),page("标的数据质量",stamp,body,label)))
+    return pages
+
+
 def stock_pages(notifier, rows, results, report):
     stamp = _extract_date(report, date.today())
     by_code = {}
+    quality_mode = any("data_quality" in row for row in rows)
+    quality_by_code = {row["code"]:row.get("data_quality",{}) for row in rows}
     for result in results:
         if not getattr(result, "success", False):
+            continue
+        if quality_mode and quality_by_code.get(str(result.code),{}).get("ai_status") != "SUCCESS":
             continue
         payload = result.to_dict()
         if not isinstance(payload, dict):
@@ -322,7 +370,6 @@ def stock_pages(notifier, rows, results, report):
         md = report_for_code(report, result.code, notifier.generate_single_stock_report(result))
         by_code[str(result.code)] = (_stock_data_from_payload(payload, md, date.today()), md)
     success = sum(x["status"] == "SUCCESS" for x in rows)
-    quality_mode = any("data_quality" in row for row in rows)
     from src.data_quality_manager import dashboard_quote
     pages = []
     # Chunk watchlists so the document is readable even with more stocks.
@@ -345,7 +392,7 @@ def stock_pages(notifier, rows, results, report):
                     display_name += " / " + row["code"]
                 records.append([display_name, f"{price:.2f}" if price is not None else MISSING,
                                 f"{change:+.2f}%" if change is not None else MISSING,
-                                p.score if ai_ok and p.score not in ("", None) else MISSING,
+                                q.get("ai_score") if ai_ok and q.get("ai_score") is not None else MISSING,
                                 (p.action or "分析完成") if ai_ok else STATUS_LABEL.get(row["status"],"未完成") if row["status"]!="SUCCESS" else "AI结果待核实"])
             else:
                 records.append([display_name,
@@ -364,17 +411,17 @@ def stock_pages(notifier, rows, results, report):
             body += '<div class="notice">未完成标的不输出评分或交易点位；不得将缺失结果当作中性信号。</div>'
         pages.append(("watchlist-"+str(offset//6+1).zfill(2), page("自选股分析总览",stamp,body,"WATCHLIST")))
     for row in rows:
-        if not quality_mode or row["status"] == "SUCCESS":
+        if not quality_mode or row["code"] in by_code:
             continue
         quality = row.get("data_quality",{})
         fields = quality.get("groups",{}).get("snapshot",{})
-        vals = [(label, f"{fields[key]['value']:.2f}" + (fields[key].get("unit") or "") if fields.get(key,{}).get("usable") else MISSING,"")
+        vals = [(label, quality_metric(fields.get(key,{}),key),"")
                 for key,label in (("price","价格"),("change_pct","涨跌幅"),("volume_ratio","量比"),("turnover_rate","换手率"),("volume","成交量"),("amount","成交额"))]
         if not any(x.get("usable") for x in fields.values()):
             continue
         body = section("已归档客观行情",grid(vals))
         body += section("分析状态", "<p>"+e(STATUS_LABEL.get(row["status"],"未完成"))+"</p><p>AI未完成，不展示评分或交易计划。</p>")
-        body += section("数据日期", "<p>"+e(quality.get("expected_trade_date"))+"</p>")
+        body += section("数据日期", "<p>预期交易日："+e(quality.get("expected_trade_date"))+" · 行情日期："+e(fields.get("price",{}).get("trade_date"))+"</p>")
         key=re.sub(r"[^A-Za-z0-9._-]","_",row["code"])
         pages.append(("stock-"+key+"-quote-only",page(quality.get("name",row["code"])+" "+row["code"],stamp,body,"STOCK / DATA ONLY")))
     for code, (p, md) in by_code.items():
@@ -382,20 +429,28 @@ def stock_pages(notifier, rows, results, report):
         snapshot = [(k,v,change_class(v) if k in ("涨跌","涨跌幅") else "") for k,v,_ in p.snapshot]
         technical = [(k,v,"") for k,v,_ in p.technical[:6] if k != "均线"]
         technical.insert(0, ("均线", ma_structure(fields) if all(k in fields for k in ("MA5","MA10","MA20")) else "未取得完整数值", ""))
-        body = section("核心判断", grid([("AI观点",p.action,""),("评分",p.score,""),("趋势",p.trend,"")])
-                       + score_bar(p.score) + '<p style="margin-top:15px">'+e(p.conclusion)+'</p>')
+        q = quality_by_code.get(code,{})
+        score = q.get("ai_score") if quality_mode else p.score
+        if quality_mode:
+            sf=q.get("groups",{}).get("snapshot",{})
+            tf=q.get("groups",{}).get("technical",{})
+            snapshot=[(label,quality_metric(sf.get(k,{}),k),change_class(quality_metric(sf.get(k,{}),k)) if k=="change_pct" else "")
+                      for k,label in (("price","现价"),("change_pct","涨跌"),("volume_ratio","量比"),("turnover_rate","换手"),("volume","成交量"),("amount","成交额"))]
+            technical=[(label,quality_metric(tf.get(k,{}),k),"") for k,label in (("ma5","MA5"),("ma10","MA10"),("ma20","MA20"),("ma60","MA60"),("macd_dif","DIF"),("macd_dea","DEA"))]
+        body = section("核心判断", grid([("AI观点",p.action,""),("评分",score,""),("趋势",p.trend,"")])
+                       + score_bar(score) + '<p style="margin-top:15px">'+e(p.conclusion)+'</p>')
         body += section("市场快照",grid(snapshot or [("行情","未提供","neutral")]))
         body += section("技术参考",grid(technical or [("技术数据","未提供","neutral")]))
-        body += '<div class="notice">数据源：'+e(p.data_source or "未注明")+' · 完整数据限制见原始报告。</div>'
+        body += '<div class="notice">数据源：'+e((q.get("groups",{}).get("snapshot",{}).get("price",{}).get("source") if quality_mode else p.data_source) or "未注明")+' · 完整数据限制见原始报告。</div>'
         key = re.sub(r"[^A-Za-z0-9._-]", "_", code)
         title = p.title+" "+code
         pages.append(("stock-"+key+"-01",page(title,stamp,body,"STOCK / SNAPSHOT")))
         # Keep execution/risk separate; suppress unsafe numerical plans.
         plans = trade_candidates(p, md)
-        body = section("交易计划校验",trade_html(plans))
+        body = section("交易计划校验", "<p>有效行情不足，暂不展示数值交易计划。</p>" if quality_mode and q.get("quote_status")!="AVAILABLE" else trade_html(plans))
         body += section("观察条件",bullets([k+"："+v for k,v,_ in p.watch_items],76))
         pages.append(("stock-"+key+"-02",page(title,stamp,body,"STOCK / RISK")))
-        if fields:
+        if fields and not quality_mode:
             labels = ("收盘","昨收","开盘","最高","最低","涨跌幅","涨跌额","振幅","成交量","成交额","量比","换手率","行情来源","MA5","MA10","MA20","乖离率(MA5)","支撑位","压力位")
             for offset in range(0,len(labels),10):
                 rows_detail = [[k,fields.get(k,MISSING)] for k in labels[offset:offset+10]]
@@ -593,6 +648,7 @@ def deliver(notifier, pages, report, label, status=""):
 def send_batch(notifier, rows, results, report):
     try:
         pages=stock_pages(notifier,rows,results,report)
+        pages+=quality_pages(rows,_extract_date(report,date.today()))
     except Exception as exc:
         logger.warning("Stock dashboard build failed (%s)",type(exc).__name__)
         return bool(notifier.send_to_telegram(status_text(rows)+"\n\n"+report))
