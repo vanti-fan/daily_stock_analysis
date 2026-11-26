@@ -893,7 +893,8 @@ class StockAnalysisPipeline:
                                query_id=query_id, rows=archive_rows, quote=realtime_quote,
                                trend=trend_result, trend_input_count=archive_sample_count,
                                trend_trade_date=archive_trade_date, chip=chip_data,
-                               fundamental=fundamental_context)
+                               fundamental=fundamental_context,
+                               expected_trade_date=str(daily_market_target_date)[:10] if daily_market_target_date else None)
 
             if use_agent:
                 logger.info(f"{log_stock_name}({code}) enabling Agent mode for analysis")
@@ -3944,6 +3945,7 @@ class StockAnalysisPipeline:
         dashboard_enabled = fd.enabled(self.notifier) and not dry_run
         requested_codes = list(stock_codes)
         dashboard_failures = {}
+        dashboard_query_ids = {}
         # 过滤 unsupported 目标并按 canonical identity 去重，均发生在
         # prefetch/provider 调用前；无结构化 target 的旧入口保持原行为。
         if analysis_targets is not None:
@@ -4056,6 +4058,7 @@ class StockAnalysisPipeline:
                     **submit_kwargs,
                 )
                 future_to_code[future] = code
+                dashboard_query_ids[str(code)] = submit_kwargs['analysis_query_id']
 
             pending = set(future_to_code.keys())
             completed_count = 0
@@ -4137,6 +4140,16 @@ class StockAnalysisPipeline:
         if dashboard_enabled:
             self._financial_dashboard_rows = fd.batch_status(requested_codes, results, dashboard_failures)
             try:
+                from src.raw_data_archive import enabled as archive_enabled, archive_root
+                if archive_enabled():
+                    from src.data_quality_manager import build_report, attach_quality, write_report
+                    try:
+                        quality_rows = [dict(row, query_id=dashboard_query_ids.get(row['code'])) for row in self._financial_dashboard_rows]
+                        quality = build_report(archive_root(), quality_rows)
+                        write_report(archive_root() / 'data-quality.json', quality)
+                        self._financial_dashboard_rows = attach_quality(quality_rows, quality)
+                    except Exception as exc:
+                        logger.warning('Data quality assessment failed: %s', type(exc).__name__)
                 fd.save_status(self._financial_dashboard_rows)
             except OSError:
                 logger.exception("Unable to persist dashboard batch status")
