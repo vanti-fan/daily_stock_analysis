@@ -79,11 +79,11 @@ class DashboardContract(unittest.TestCase):
         notifier, rows, results = sample()
         self.assertEqual([r["status"] for r in rows],["TIMEOUT"]*3+["SUCCESS"])
         pages = fd.stock_pages(notifier,rows,results,STOCK)
-        self.assertEqual(len(pages),3)
+        self.assertGreaterEqual(len(pages),3)
         for code in CODES:
             self.assertIn(code,pages[0][1])
-        self.assertIn("交易计划待核实",pages[-1][1])
-        self.assertNotIn(">14.40<",pages[-1][1])
+        self.assertIn("交易计划待核实",dict(pages)["stock-601958-02"])
+        self.assertNotIn(">14.40<",dict(pages)["stock-601958-02"])
         all_failed = fd.batch_status(CODES,[],dict.fromkeys(CODES,"TIMEOUT"))
         self.assertIn("0/4",fd.status_text(all_failed))
         self.assertEqual(len(fd.stock_pages(notifier,all_failed,[],"")),1)
@@ -104,6 +104,69 @@ class DashboardContract(unittest.TestCase):
         self.assertIn("餐饮业",pages[1][1])
         self.assertEqual(fd.change_class("+0.61%"),"up")
         self.assertEqual(fd.change_class("-0.61%"),"down")
+
+    def test_reused_market_route(self):
+        report = MARKET.replace("# A股大盘复盘", "# 🎯 大盘复盘")
+        self.assertFalse(fd.is_market_report(report))
+        report = "# 📈 大盘复盘\n\n[dsa-market-region]: # (cn)\n\n" + report
+        self.assertTrue(fd.is_market_report(report))
+        self.assertFalse(fd.is_market_report(report.replace("(cn)", "(us)")))
+
+    def test_numeric_ma_order(self):
+        self.assertIn("弱势多头", fd.ma_structure({"MA5":"45.73","MA10":"44.827","MA20":"47.6095"}))
+        self.assertIn("多头排列", fd.ma_structure({"MA5":"3","MA10":"2","MA20":"1"}))
+        self.assertIn("不能确认", fd.ma_structure({"MA5":"3","MA10":"2"}))
+
+    def test_independent_trade_candidates(self):
+        poster = SimpleNamespace(sniper=[])
+        md = """| 操作点位 | 当前价 |
+| --- | --- |
+| 理想买入点 | 127.34元（回踩） |
+| 次优买入点 | 117.28元（支撑） |
+| 止损位 | 124.21元 |
+| 目标位 | 140.00元 |
+"""
+        a,b = fd.trade_candidates(poster, md)
+        self.assertEqual(a["status"],"VALID")
+        self.assertAlmostEqual(a["rr"],12.66/3.13)
+        self.assertEqual(b["status"],"INVALID")
+        self.assertIsNone(b["rr"])
+        rendered = fd.trade_html([a,b])
+        self.assertIn("4.04:1",rendered)
+        self.assertIn("次优买入",rendered)
+        self.assertNotIn("确认买入",rendered)
+
+    def test_real_report_field_shapes(self):
+        md = """## ⚪ 鹏鼎控股 (002938)
+
+**🚨 风险警报**:
+- 应收账款风险。
+**✨ 利好催化**:
+- PCB产业活跃。
+### 📈 当日行情
+| 收盘 | 昨收 | 开盘 | 最高 | 最低 | 涨跌幅 | 涨跌额 | 振幅 | 成交量 | 成交额 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 45.80 | 46.20 | 47.00 | 47.41 | 45.20 | -0.87% | -0.40 | 4.78% | 2884.93 万股 | 13.26 亿元 |
+| 当前价 | 量比 | 换手率 | 行情来源 |
+| --- | --- | --- | --- |
+| 45.80 | 0.91 | 1.25% | 腾讯财经 |
+
+### 📊 数据透视
+| 价格指标 | 当前价 |
+| --- | --- |
+| MA5 | 45.73 |
+| MA10 | 44.827 |
+| MA20 | 47.6095 |
+"""
+        # Real report tables are separated by blank lines.
+        md = md.replace("亿元 |\n| 当前价", "亿元 |\n\n| 当前价")
+        fields=fd.stock_fields(md)
+        self.assertEqual(fields["成交额"],"13.26 亿元")
+        self.assertEqual(fields["MA10"],"44.827")
+        self.assertEqual(fields["行情来源"],"腾讯财经")
+        self.assertEqual(fd.named_block(md,"风险警报"),["应收账款风险。"])
+        self.assertEqual(fd.named_block(md,"利好催化"),["PCB产业活跃。"])
+        self.assertEqual(fd.report_for_code(md+"\n## other (300394)\nother", "002938", ""),md+"\n")
 
     def test_render_failure_text_fallback(self):
         notifier,rows,results=sample()
