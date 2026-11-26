@@ -76,7 +76,8 @@ def assess_field(key, field, *, expected_date=None, require_date=False, currency
         if status in USABLE and (key in ("profit_ratio","concentration_90","concentration_70") and not 0 <= value <= 1):
             status, reason = "INVALID", "fraction_out_of_range"
     return dict(key=key, value=value, unit=unit, source=source, origin=origin,
-                trade_date=q.get("trade_date"), status=status, reason=reason,
+                trade_date=q.get("trade_date"), observed_at=q.get("observed_at"),
+                fetched_at=q.get("fetched_at"), status=status, reason=reason,
                 usable=status in USABLE and value is not None)
 
 
@@ -163,6 +164,8 @@ def assess_stock(root, index, row):
     history_summary={"status":historical_status,"bar_count":len(bars),"latest_trade_date":last_date,
                      "adjustment":history.get("adjustment"),"source":history.get("source")}
     research=load_json(result_folder,"ai_research.json") if result_folder else None
+    if research and research.get("code") not in (None, code):
+        research, research_reason = None, "research_identity_mismatch"
     batch_status=row.get("status","INCOMPLETE")
     # A pipeline-level timeout is not an independently observed LLM timeout.
     ai_status=("SUCCESS" if batch_status=="SUCCESS" and research and research.get("success") is True
@@ -177,20 +180,38 @@ def assess_stock(root, index, row):
             "required_quote_coverage":required,"history":history_summary,
             "batch_status":batch_status,"ai_status":ai_status,
             "actual_model":research.get("model_used") if research else None,
+            "ai_score":valid_score(research.get("sentiment_score")) if ai_status=="SUCCESS" else None,
             "research_archive_reason":research_reason}
+
+
+def valid_score(value):
+    n = finite_number(value)
+    return n if n is not None and 0 <= n <= 100 else None
+
+
+def source_coverage(stocks):
+    """Count field observations, not HTTP requests; missing source stays explicit."""
+    sources=defaultdict(list)
+    for stock in stocks:
+        for group in ("snapshot","technical","chips"):
+            for field in stock.get("groups",{}).get(group,{}).values():
+                sources[(field.get("source") or "UNKNOWN",group)].append(field)
+    return [{"source":source,"category":group,**summarize(fields)}
+            for (source,group),fields in sorted(sources.items())]
+
+
+def unavailable_quality(rows):
+    """Fail closed in display when the archive integrity check itself fails."""
+    return [{**r, "data_quality":{"code":r["code"],"name":r.get("name") or r["code"],
+             "quote_status":"UNVERIFIED","ai_status":"UNVERIFIED",
+             "archive_reason":"quality_assessment_failed","groups":{},
+             "coverage":{},"history":{}}} for r in rows]
 
 
 def build_report(root, rows, *, scenario="LIVE"):
     root=Path(root)
     index=verify(root)
     stocks=[assess_stock(root,index,row) for row in rows]
-    sources=defaultdict(list)
-    for stock in stocks:
-        # Fundamentals intentionally omitted: these mirror quote valuation fields.
-        for group in ("snapshot","technical","chips"):
-            for field in stock["groups"][group].values():
-                if field.get("source"):
-                    sources[(field["source"],group)].append(field)
     market=[]
     for item in index:
         if item["kind"]!="market":
@@ -204,8 +225,7 @@ def build_report(root, rows, *, scenario="LIVE"):
             "quote_price_usable":sum(bool(s["groups"]["snapshot"]["price"]["usable"]) for s in stocks),
             "ai_completed":sum(s["ai_status"]=="SUCCESS" for s in stocks),
             "stocks":stocks,"market":market,
-            "source_field_coverage":[{"source":source,"category":group,**summarize(fields)}
-                                    for (source,group),fields in sorted(sources.items())],
+            "source_field_coverage":source_coverage(stocks),
             "limitations":["Field coverage is not provider request success rate.",
                            "No independent second observation implies no cross-source validation.",
                            "Missing archive or batch timeout does not establish provider/LLM root cause."]}
@@ -222,8 +242,8 @@ def write_report(path, report):
 
 def attach_quality(rows, report):
     """Join only assessed current-batch evidence; never overwrite original batch status."""
-    by_code={s["code"]:s for s in report["stocks"]}
-    return [{**row,"data_quality":by_code[row["code"]]} if row["code"] in by_code else row for row in rows]
+    by_key={(s["code"],s.get("query_id")):s for s in report["stocks"]}
+    return [{**row,"data_quality":by_key[(row["code"],row.get("query_id"))]} if (row["code"],row.get("query_id")) in by_key else row for row in rows]
 
 
 def dashboard_quote(row, key):
