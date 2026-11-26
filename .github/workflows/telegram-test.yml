@@ -70,7 +70,7 @@ jobs:
 
       - name: Run offline dashboard contract tests
         run: |
-          python -m compileall -q src/financial_dashboard.py src/core/pipeline.py src/notification.py
+          python -m compileall -q main.py src/financial_dashboard.py src/core/pipeline.py src/notification.py
           python -m unittest discover -s tests -p test_financial_dashboard.py -v
 
       - name: Render fixed-sample financial dashboards
@@ -89,7 +89,9 @@ jobs:
           failed = fd.batch_status(CODES, [], dict.fromkeys(CODES, "TIMEOUT"))
           pages += [("all-failed-"+name, doc) for name, doc in fd.stock_pages(notifier, failed, [], "")]
           paths = fd.render_pages(pages, output)
-          assert len(paths) == 7, paths
+          assert len(paths) == len(pages) and len(paths) >= 7, paths
+          import json
+          (output/'page-manifest.json').write_text(json.dumps([p.name for p in paths]), encoding='utf-8')
           (output/"market-fixture.md").write_text(MARKET, encoding="utf-8")
           (output/"stock-fixture.md").write_text(STOCK, encoding="utf-8")
           print("HD rendering PASS:", len(paths), "pages")
@@ -112,12 +114,14 @@ jobs:
                         message_thread_id=os.environ.get("TELEGRAM_MESSAGE_THREAD_ID", ""))
           notifier = SimpleNamespace(_telegram_config=config, _is_telegram_configured=lambda:bool(config["bot_token"] and config["chat_id"]))
           paths = sorted(Path("image-test").glob("*.png"))
-          assert len(paths)==7
+          import json
+          expected=json.loads(Path('image-test/page-manifest.json').read_text())
+          assert sorted(p.name for p in paths)==sorted(expected)
           for p in paths:
-              assert fd.send_file(notifier,p.name,p.read_bytes(),caption="V0.2 固定样本 / 非实时行情"), p.name
+              assert fd.send_file(notifier,p.name,p.read_bytes(),caption="V0.2.1 固定样本 / 非实时行情"), p.name
               time.sleep(1.2)
           p=Path("image-test/watchlist-01.png")
-          assert fd.send_file(notifier,p.name,p.read_bytes(),photo=True,caption="V0.2 自选股预览 / 固定样本")
+          assert fd.send_file(notifier,p.name,p.read_bytes(),photo=True,caption="V0.2.1 自选股预览 / 固定样本")
           print("Telegram HD document and preview delivery PASS")
           PY
 
