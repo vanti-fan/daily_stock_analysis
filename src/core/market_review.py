@@ -310,6 +310,9 @@ def run_market_review(
                 language=getattr(runtime_config, "report_language", "zh"),
                 root_title=review_text["root_title"],
             )
+            from src.raw_data_archive import record as record_archive
+            record_archive('market', region=persist_region, query_id=history_query_id,
+                           payload=market_review_payload, snapshot=market_light_snapshots)
             markdown_report = _render_market_review_payload_markdown(
                 market_review_payload,
                 wrapper_title=review_text["root_title"],
