@@ -1,0 +1,90 @@
+
+name: DeepSeek Connection Test
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  deepseek-test:
+    runs-on: ubuntu-latest
+    environment: STOCK_LIST
+    timeout-minutes: 3
+
+    steps:
+      - name: Test DeepSeek API
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          LITELLM_MODEL: ${{ vars.LITELLM_MODEL }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import json
+          import time
+          import urllib.request
+          import urllib.error
+
+          key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+          configured_model = os.getenv("LITELLM_MODEL", "").strip()
+
+          print("DeepSeek API Key configured:", bool(key))
+          print("Configured model:", configured_model)
+
+          if not key:
+              raise SystemExit("Missing DeepSeek API Key")
+
+          if not configured_model.startswith("deepseek/"):
+              raise SystemExit("Incorrect model configuration")
+
+          model = configured_model.split("/", 1)[1]
+
+          payload = {
+              "model": model,
+              "messages": [
+                  {
+                      "role": "user",
+                      "content": "Reply only: DeepSeek API Test Successful"
+                  }
+              ],
+              "thinking": {"type": "disabled"},
+              "max_tokens": 100,
+              "stream": False
+          }
+
+          request = urllib.request.Request(
+              "https://api.deepseek.com/chat/completions",
+              data=json.dumps(payload).encode(),
+              headers={
+                  "Authorization": f"Bearer {key}",
+                  "Content-Type": "application/json"
+              }
+          )
+
+          start = time.monotonic()
+
+          try:
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  result = json.load(response)
+                  print("HTTP Status:", response.status)
+
+          except urllib.error.HTTPError as e:
+              print("HTTP Error:", e.code)
+              raise SystemExit(1)
+
+          except Exception as e:
+              print("Connection Error:", type(e).__name__)
+              raise SystemExit(1)
+
+          content = result["choices"][0]["message"]["content"]
+
+          print("Actual Model:", result.get("model"))
+          print("Response:", content)
+          print("Token Usage:", result.get("usage"))
+          print("Elapsed Seconds:", round(time.monotonic() - start, 2))
+
+          if not content or not content.strip():
+              raise SystemExit("Empty model response")
+
+          print("DeepSeek API connection successful.")
+          PY
