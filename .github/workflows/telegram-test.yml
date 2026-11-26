@@ -10,7 +10,7 @@ permissions:
 jobs:
   telegram-image-test:
     if: ${{ github.ref == 'refs/heads/feature/telegram-dashboard-v1' }}
-    runs-on: ubuntu-24.04.04
+    runs-on: ubuntu-26.04
     environment: STOCK_LIST
     timeout-minutes: 15
 
@@ -32,20 +32,46 @@ jobs:
           python -m pip install -r requirements.txt
           python -c "import markdown2, imgkit, requests; print('Python dependencies OK')"
 
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
       - name: Install image rendering dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y wkhtmltopdf fonts-noto-cjk fontconfig
+          echo "Checking operating system..."
+          cat /etc/os-release
 
-          wkhtmltoimage --version
+          echo "Checking Node.js environment..."
+          node --version
+          npm --version
+
+          echo "Installing Playwright..."
+          npm install -g playwright@1.65.1
+
+          echo "Installing Chromium and system dependencies..."
+          playwright install --with-deps chromium
+
+          echo "Installing Chinese fonts..."
+          sudo apt-get update
+          sudo apt-get install -y fonts-noto-cjk fontconfig
+          fc-cache -f
+
+          echo "Checking Playwright CLI..."
+          command -v playwright
+          playwright --version
+
+          echo "Checking Chinese fonts..."
           fc-match "Noto Sans CJK SC"
 
-          echo "QT_QPA_PLATFORM=offscreen" >> "$GITHUB_ENV"
+          echo "Playwright rendering dependencies installed successfully."
+
 
       - name: Generate test dashboard
         env:
           MARKDOWN_TO_IMAGE_CHANNELS: ${{ vars.MARKDOWN_TO_IMAGE_CHANNELS }}
-          MD2IMG_ENGINE: ${{ vars.MD2IMG_ENGINE || 'wkhtmltoimage' }}
+          MD2IMG_ENGINE: ${{ vars.MD2IMG_ENGINE || 'playwright' }}
           MARKDOWN_TO_IMAGE_MAX_CHARS: ${{ vars.MARKDOWN_TO_IMAGE_MAX_CHARS || '15000' }}
         run: |
           python - <<'PY'
@@ -116,8 +142,15 @@ jobs:
           print("Markdown length:", len(report))
           print("Maximum characters:", max_chars)
 
-          if engine != "wkhtmltoimage":
+          if engine != "playwright":
               raise SystemExit("Unexpected rendering engine")
+
+          from src.config import get_config
+          actual_engine = get_config().md2img_engine
+          print("Actual rendering engine:", actual_engine)
+
+          if actual_engine != "playwright":
+              raise SystemExit("Playwright configuration not active") 
 
           if "telegram" not in channels.lower().split(","):
               raise SystemExit("Telegram image channel not enabled")
