@@ -1,0 +1,77 @@
+
+name: Telegram Connection Test
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  telegram-test:
+    runs-on: ubuntu-latest
+    environment: STOCK_LIST
+    timeout-minutes: 2
+
+    steps:
+      - name: Validate Telegram API
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import json
+          import urllib.request
+          import urllib.error
+
+          token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+          chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
+          print("Bot Token configured:", bool(token))
+          print("Chat ID configured:", bool(chat_id))
+
+          if not token or not chat_id:
+              raise SystemExit("Missing Telegram configuration")
+
+          base = f"https://api.telegram.org/bot{token}"
+
+          def request_api(method, payload=None):
+              data = (
+                  json.dumps(payload).encode()
+                  if payload is not None else None
+              )
+              req = urllib.request.Request(
+                  f"{base}/{method}",
+                  data=data,
+                  headers={"Content-Type": "application/json"}
+              )
+
+              try:
+                  with urllib.request.urlopen(req, timeout=15) as response:
+                      result = json.load(response)
+                      print(f"{method}: HTTP {response.status}")
+                      return result
+              except urllib.error.HTTPError as e:
+                  print(f"{method}: HTTP {e.code}")
+                  raise SystemExit(1)
+              except Exception as e:
+                  print("Connection error:", type(e).__name__)
+                  raise SystemExit(1)
+
+          bot = request_api("getMe")
+
+          if not bot.get("ok"):
+              raise SystemExit("Bot authentication failed")
+
+          print("Bot username:", bot["result"]["username"])
+
+          result = request_api("sendMessage", {
+              "chat_id": chat_id,
+              "text": "Daily Stock Analysis: GitHub Telegram Test Successful!"
+          })
+
+          if not result.get("ok"):
+              raise SystemExit("Telegram delivery failed")
+
+          print("Telegram delivery successful.")
+          PY
