@@ -264,7 +264,7 @@ jobs:
 
       - name: Upload image test artifacts
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: telegram-image-test-${{ github.run_number }}
           path: image-test/
