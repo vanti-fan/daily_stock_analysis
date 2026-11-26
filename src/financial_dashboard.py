@@ -322,6 +322,8 @@ def stock_pages(notifier, rows, results, report):
         md = report_for_code(report, result.code, notifier.generate_single_stock_report(result))
         by_code[str(result.code)] = (_stock_data_from_payload(payload, md, date.today()), md)
     success = sum(x["status"] == "SUCCESS" for x in rows)
+    quality_mode = any("data_quality" in row for row in rows)
+    from src.data_quality_manager import dashboard_quote
     pages = []
     # Chunk watchlists so the document is readable even with more stocks.
     for offset in range(0, len(rows), 6):
@@ -333,16 +335,48 @@ def stock_pages(notifier, rows, results, report):
             item = by_code.get(row["code"])
             p = item[0] if item else None
             display_name = row["name"]+" / "+row["code"] if row["name"] != row["code"] else row["code"]
-            records.append([display_name,
-                            value_for(p.snapshot,"现价") if p else MISSING,
-                            percent(value_for(p.snapshot,"涨跌","涨跌幅")) if p else MISSING,
-                            (p.score if p.score not in ("", None) else MISSING) if p else MISSING,
-                            p.action or "分析完成" if p else STATUS_LABEL.get(row["status"],"未完成")])
+            if quality_mode:
+                q = row.get("data_quality", {})
+                price = dashboard_quote(row, "price")
+                change = dashboard_quote(row, "change_pct")
+                ai_ok = q.get("ai_status") == "SUCCESS" and p is not None
+                display_name = q.get("name") or row["name"]
+                if display_name != row["code"]:
+                    display_name += " / " + row["code"]
+                records.append([display_name, f"{price:.2f}" if price is not None else MISSING,
+                                f"{change:+.2f}%" if change is not None else MISSING,
+                                p.score if ai_ok and p.score not in ("", None) else MISSING,
+                                (p.action or "分析完成") if ai_ok else STATUS_LABEL.get(row["status"],"未完成") if row["status"]!="SUCCESS" else "AI结果待核实"])
+            else:
+                records.append([display_name,
+                                value_for(p.snapshot,"现价") if p else MISSING,
+                                percent(value_for(p.snapshot,"涨跌","涨跌幅")) if p else MISSING,
+                                (p.score if p.score not in ("", None) else MISSING) if p else MISSING,
+                                p.action or "分析完成" if p else STATUS_LABEL.get(row["status"],"未完成")])
+        if quality_mode:
+            body += section("行情与AI独立覆盖率",grid([
+                ("有效价格",f"{sum(dashboard_quote(r, 'price') is not None for r in rows)}/{len(rows)}",""),
+                ("AI已归档完成",f"{sum(r.get('data_quality',{}).get('ai_status')=='SUCCESS' for r in rows)}/{len(rows)}",""),
+                ("数据口径","当前归档","")]))
         body += section("自选股总览", table(["标的","价格","涨跌幅","评分","状态 / AI观点"], records,
                                           lambda i,v: change_class(v) if i==2 else ""))
         if success < len(rows):
             body += '<div class="notice">未完成标的不输出评分或交易点位；不得将缺失结果当作中性信号。</div>'
         pages.append(("watchlist-"+str(offset//6+1).zfill(2), page("自选股分析总览",stamp,body,"WATCHLIST")))
+    for row in rows:
+        if not quality_mode or row["status"] == "SUCCESS":
+            continue
+        quality = row.get("data_quality",{})
+        fields = quality.get("groups",{}).get("snapshot",{})
+        vals = [(label, f"{fields[key]['value']:.2f}" + (fields[key].get("unit") or "") if fields.get(key,{}).get("usable") else MISSING,"")
+                for key,label in (("price","价格"),("change_pct","涨跌幅"),("volume_ratio","量比"),("turnover_rate","换手率"),("volume","成交量"),("amount","成交额"))]
+        if not any(x.get("usable") for x in fields.values()):
+            continue
+        body = section("已归档客观行情",grid(vals))
+        body += section("分析状态", "<p>"+e(STATUS_LABEL.get(row["status"],"未完成"))+"</p><p>AI未完成，不展示评分或交易计划。</p>")
+        body += section("数据日期", "<p>"+e(quality.get("expected_trade_date"))+"</p>")
+        key=re.sub(r"[^A-Za-z0-9._-]","_",row["code"])
+        pages.append(("stock-"+key+"-quote-only",page(quality.get("name",row["code"])+" "+row["code"],stamp,body,"STOCK / DATA ONLY")))
     for code, (p, md) in by_code.items():
         fields = stock_fields(md)
         snapshot = [(k,v,change_class(v) if k in ("涨跌","涨跌幅") else "") for k,v,_ in p.snapshot]
