@@ -68,205 +68,64 @@ jobs:
           echo "Playwright rendering dependencies installed successfully."
 
 
-      - name: Generate test dashboard
+      - name: Run offline dashboard contract tests
+        run: |
+          python -m compileall -q src/financial_dashboard.py src/core/pipeline.py src/notification.py
+          python -m unittest discover -s tests -p test_financial_dashboard.py -v
+
+      - name: Render fixed-sample financial dashboards
+        run: |
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "tests")
+          from test_financial_dashboard import sample, MARKET, STOCK, CODES
+          from src import financial_dashboard as fd
+          notifier, rows, results = sample()
+          output = Path("image-test")
+          fd.save_status(rows, output)
+          pages = fd.stock_pages(notifier, rows, results, STOCK)
+          pages += fd.market_pages(MARKET)
+          failed = fd.batch_status(CODES, [], dict.fromkeys(CODES, "TIMEOUT"))
+          pages += [("all-failed-"+name, doc) for name, doc in fd.stock_pages(notifier, failed, [], "")]
+          paths = fd.render_pages(pages, output)
+          assert len(paths) == 7, paths
+          (output/"market-fixture.md").write_text(MARKET, encoding="utf-8")
+          (output/"stock-fixture.md").write_text(STOCK, encoding="utf-8")
+          print("HD rendering PASS:", len(paths), "pages")
+          PY
+
+      - name: Send HD test files to Telegram
         env:
-          MARKDOWN_TO_IMAGE_CHANNELS: ${{ vars.MARKDOWN_TO_IMAGE_CHANNELS }}
-          MD2IMG_ENGINE: ${{ vars.MD2IMG_ENGINE || 'playwright' }}
-          MARKDOWN_TO_IMAGE_MAX_CHARS: ${{ vars.MARKDOWN_TO_IMAGE_MAX_CHARS || '15000' }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
         run: |
           python - <<'PY'
           import os
           import time
-          import struct
-          import logging
           from pathlib import Path
-
-          from src.md2img import markdown_to_image
-
-          logging.basicConfig(level=logging.INFO)
-
-          output = Path("image-test")
-          output.mkdir(exist_ok=True)
-
-          report = """
-          # 每日股票分析 - 图片推送测试
-
-          **Telegram Dashboard V0.1**
-
-          本报告使用固定测试数据，不代表实时行情。
-
-          ## 自选股总览
-
-          | 股票代码 | 股票名称 | 测试价格 | 涨跌幅 | 评分 | 状态 |
-          | --- | --- | ---: | ---: | ---: | --- |
-          | 002938 | 鹏鼎控股 | 45.80 | -0.87% | 58 | 观望 |
-          | 300394 | 天孚通信 | 133.99 | +2.38% | 52 | 观望 |
-          | 300006 | 莱美药业 | 8.00 | -7.94% | 31 | 减仓 |
-          | 601958 | 金钼股份 | 14.73 | +0.61% | -- | 分析未完成 |
-
-          ## 数据完整性
-
-          - 历史行情：4/4
-          - 实时行情：4/4
-          - AI分析：3/4
-          - 筹码分布：0/4
-
-          ## 测试说明
-
-          - 验证中文字体是否正常显示。
-          - 验证表格排版及图片清晰度。
-          - 验证 Telegram 图片推送。
-          - 以上数据及建议仅用于功能测试。
-
-          ---
-
-          Daily Stock Analysis | Dashboard V0.1
-          """
-
-          from textwrap import dedent
-
-          report = dedent(report).strip()
-
-          (output / "test-report.md").write_text(
-              report, encoding="utf-8"
-          )
-
-          engine = os.getenv("MD2IMG_ENGINE", "")
-          max_chars = int(
-              os.getenv("MARKDOWN_TO_IMAGE_MAX_CHARS", "15000")
-          )
-          channels = os.getenv("MARKDOWN_TO_IMAGE_CHANNELS", "")
-
-          print("Rendering engine:", engine)
-          print("Image channels:", channels)
-          print("Markdown length:", len(report))
-          print("Maximum characters:", max_chars)
-
-          if engine != "playwright":
-              raise SystemExit("Unexpected rendering engine")
-
-          from src.config import get_config
-          actual_engine = get_config().md2img_engine
-          print("Actual rendering engine:", actual_engine)
-
-          if actual_engine != "playwright":
-              raise SystemExit("Playwright configuration not active") 
-
-          if "telegram" not in channels.lower().split(","):
-              raise SystemExit("Telegram image channel not enabled")
-
-          start = time.monotonic()
-
-          image = markdown_to_image(
-              report,
-              max_chars=max_chars
-          )
-
-          if not image:
-              raise SystemExit("FAIL: PNG rendering returned no data")
-
-          if (
-              len(image) < 24
-              or image[:8] != b"\x89PNG\r\n\x1a\n"
-              or image[12:16] != b"IHDR"
-          ):
-              raise SystemExit("FAIL: Invalid PNG format")
-
-          width, height = struct.unpack(">II", image[16:24])
-
-          path = output / "telegram-dashboard-test.png"
-          path.write_bytes(image)
-
-          print("PNG rendering successful")
-          print("Image dimensions:", width, "x", height)
-          print("Image size:", len(image), "bytes")
-          print("Rendering seconds:", round(time.monotonic() - start, 2))
-
-          if width <= 0 or height <= 0:
-              raise SystemExit("FAIL: Invalid image dimensions")
-
-          if len(image) > 10_000_000:
-              raise SystemExit("FAIL: Image exceeds Telegram size limit")
-
-          if width + height > 10000:
-              raise SystemExit("FAIL: Image dimensions exceed Telegram limit")
-
-          if max(width, height) / min(width, height) > 20:
-              raise SystemExit("FAIL: Image aspect ratio exceeds Telegram limit")
-
-          print("PNG validation: PASS")
-          PY
-
-      - name: Send dashboard to Telegram
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python - <<'PY'
-          import os
-          import requests
-          from pathlib import Path
-
-          token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-          chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-
-          print("Bot Token configured:", bool(token))
-          print("Chat ID configured:", bool(chat_id))
-
-          if not token or not chat_id:
-              raise SystemExit("FAIL: Missing Telegram configuration")
-
-          image_path = Path(
-              "image-test/telegram-dashboard-test.png"
-          )
-
-          if not image_path.is_file():
-              raise SystemExit("FAIL: Image file missing")
-
-          try:
-              with image_path.open("rb") as image:
-                  response = requests.post(
-                      f"https://api.telegram.org/bot{token}/sendPhoto",
-                      data={
-                          "chat_id": chat_id,
-                          "caption": (
-                              "Daily Stock Analysis\n"
-                              "Dashboard V0.1 - 图片推送测试\n"
-                              "固定测试数据，非实时行情"
-                          )
-                      },
-                      files={
-                          "photo": (
-                              image_path.name,
-                              image,
-                              "image/png"
-                          )
-                      },
-                      timeout=60
-                  )
-
-              print("Telegram HTTP Status:", response.status_code)
-
-              result = response.json()
-
-              if response.status_code != 200 or not result.get("ok"):
-                  raise SystemExit("FAIL: Telegram image delivery failed")
-
-              print("Telegram sendPhoto: PASS")
-              print("Dashboard image sent successfully")
-
-          except requests.RequestException as e:
-              print("Connection error:", type(e).__name__)
-              raise SystemExit(1)
-          except ValueError:
-              raise SystemExit("FAIL: Invalid Telegram response")
+          from types import SimpleNamespace
+          from src import financial_dashboard as fd
+          config = dict(bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
+                        chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
+                        message_thread_id=os.environ.get("TELEGRAM_MESSAGE_THREAD_ID", ""))
+          notifier = SimpleNamespace(_telegram_config=config, _is_telegram_configured=lambda:bool(config["bot_token"] and config["chat_id"]))
+          paths = sorted(Path("image-test").glob("*.png"))
+          assert len(paths)==7
+          for p in paths:
+              assert fd.send_file(notifier,p.name,p.read_bytes(),caption="V0.2 固定样本 / 非实时行情"), p.name
+              time.sleep(1.2)
+          p=Path("image-test/watchlist-01.png")
+          assert fd.send_file(notifier,p.name,p.read_bytes(),photo=True,caption="V0.2 自选股预览 / 固定样本")
+          print("Telegram HD document and preview delivery PASS")
           PY
 
       - name: Upload image test artifacts
         if: ${{ always() }}
         uses: actions/upload-artifact@v6
         with:
-          name: telegram-image-test-${{ github.run_number }}
+          name: financial-dashboard-test-${{ github.run_number }}
           path: image-test/
           if-no-files-found: warn
           retention-days: 7
