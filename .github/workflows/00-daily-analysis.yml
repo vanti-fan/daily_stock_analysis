@@ -364,6 +364,11 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
+
+          # Telegram 图片推送配置 - Dashboard V0.1
+          MARKDOWN_TO_IMAGE_CHANNELS: ${{ github.ref == 'refs/heads/feature/telegram-dashboard-v1' && vars.MARKDOWN_TO_IMAGE_CHANNELS || '' }}
+          MD2IMG_ENGINE: ${{ vars.MD2IMG_ENGINE || 'wkhtmltoimage' }}
+          MARKDOWN_TO_IMAGE_MAX_CHARS: ${{ vars.MARKDOWN_TO_IMAGE_MAX_CHARS || '15000' }}
           
           # 方式四：邮件
           EMAIL_SENDER: ${{ vars.EMAIL_SENDER || secrets.EMAIL_SENDER }}
