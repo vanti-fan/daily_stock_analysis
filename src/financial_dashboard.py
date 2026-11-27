@@ -466,6 +466,10 @@ def stock_pages(notifier, rows, results, report):
         body += section("数据日期", "<p>预期交易日："+e(quality.get("expected_trade_date"))+" · 行情日期："+e(fields.get("price",{}).get("trade_date"))+"</p>")
         key=re.sub(r"[^A-Za-z0-9._-]","_",row["code"])
         pages.append(("stock-"+key+"-quote-only",page(quality.get("name",row["code"])+" "+row["code"],stamp,body,"STOCK / DATA ONLY")))
+    for row in rows:
+        quality=row.get("data_quality",{})
+        if quality.get("chip_quality") is not None:
+            pages.append(chip_page(row["code"],quality,stamp))
     for code, (p, md) in by_code.items():
         fields = stock_fields(md)
         snapshot = [(k,v,change_class(v) if k in ("涨跌","涨跌幅") else "") for k,v,_ in p.snapshot]
@@ -789,3 +793,24 @@ def structured_market_pages(content,payload):
     body+=section("风险与数据边界",bullets(p.risks,100))
     pages.append(("market-03",page("市场观察与风险",stamp,body,"MARKET / OUTLOOK")))
     return pages
+
+def chip_page(code, quality, stamp):
+    from src.chip_data_quality import FIELDS, RATIOS
+    meta=quality.get("chip_quality") or {}
+    fields=quality.get("groups",{}).get("chips",{})
+    labels=dict(zip(FIELDS,("获利比例","平均成本","90%成本下限","90%成本上限",
+                           "70%成本下限","70%成本上限","90%集中度","70%集中度")))
+    def fmt(k):
+        f=fields.get(k,{})
+        if meta.get("status")!="AVAILABLE" or not f.get("usable"): return MISSING
+        v=f.get("value")
+        return (f"{v:.2%}" if k in RATIOS else f"{v:.2f}") if v is not None else MISSING
+    body=section("成本与集中度（CNY / %）",grid([(labels[k],fmt(k),"") for k in FIELDS]))
+    body+=section("来源与质量",table(["项目","记录"],[
+        ["状态",meta.get("status") or "UNAVAILABLE"],["来源",meta.get("source") or MISSING],
+        ["交易日",meta.get("trade_date") or MISSING],["数据性质",meta.get("data_kind") or MISSING],
+        ["价格口径",meta.get("price_basis") or MISSING]]))
+    body+='<div class="notice">筹码为模型估算，不是真实投资者持仓；未独立验证复权口径。不绘制无明细支持的筹码峰。</div>'
+    if meta.get("reason"): body+='<p>'+e(meta["reason"])+'</p>'
+    key=re.sub(r"[^A-Za-z0-9._-]","_",code)
+    return ("stock-"+key+"-chips",page((quality.get("name") or code)+" "+code+" 筹码成本",stamp,body,"STOCK / CHIPS"))
