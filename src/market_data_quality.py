@@ -1,6 +1,7 @@
 """Phase 2.4.4: A-share market observations, independent of AI output."""
 from __future__ import annotations
 import math
+import hashlib
 import os
 import re
 from datetime import date, datetime
@@ -100,6 +101,8 @@ def breadth_from_frame(df, source, *, amount_multiplier=1, min_universe=MIN_UNIV
             "total_amount":amount/1e8 if complete_amount else None,
             "sample_amount":amount/1e8 if amount_valid else None,
             "previous_total_amount":None,"turnover_change_pct":None,
+            "universe_hash":hashlib.sha256("\n".join(sorted(seen)).encode()).hexdigest(),
+            "previous_trade_date":None,
             "provider":source,"trade_date":day,"date_status":date_state(day),
             "observed_at":china_now().isoformat(),"scope":SCOPE,"turnover_unit":"CNY_100M",
             "universe_count":universe,"valid_count":valid,"zero_amount_count":suspended,
@@ -128,7 +131,8 @@ def normalize_stats(data, provider):
     d["date_status"]=date_state(d["trade_date"])
     if d["date_status"]=="INVALID": return None
     d["observed_at"]=d.get("observed_at") or china_now().isoformat()
-    d["turnover_change_pct"]=None # no same-scope previous-day observation in existing API contract
+    if not d.get("previous_trade_date") or not d.get("completed_session"):
+        d["turnover_change_pct"]=None
     return d
 
 def index_rows(data, provider):
@@ -161,7 +165,8 @@ def index_rows(data, provider):
         out[c]=item
     rows=[out[k] for k in INDEX_NAMES if k in out and k not in bad]
     dates={r["trade_date"] for r in rows if r["trade_date"]}
-    return rows if len(dates)<=1 else []
+    if len(dates)>1 or (dates and any(not r["trade_date"] for r in rows)): return []
+    return rows if len({r["source"] for r in rows})<=1 else []
 
 def rank_frame(df,name_col,change_col,n,source,category,*,known_date=None,amount_multiplier=None):
     if df is None or df.empty or not {name_col,change_col}.issubset(df.columns): return None
@@ -225,7 +230,7 @@ def public_breadth(data):
     return {k:data.get(k) for k in (*BREADTH_KEYS,"status","provider","trade_date","date_status",
            "observed_at","scope","turnover_unit","universe_count","valid_count","zero_amount_count",
            "invalid_count","duplicate_conflicts","amount_coverage","limit_coverage","breadth_usable",
-           "coverage_verified","turnover_change_pct","sample_amount")}
+           "coverage_verified","turnover_change_pct","sample_amount","previous_total_amount","previous_trade_date","universe_hash","completed_session","limit_pools")}
 
 def stats_text(data, english=False):
     def show(k): return str(data.get(k)) if data.get(k) is not None else ("N/A" if english else "未取得")
@@ -239,3 +244,28 @@ def stats_text(data, english=False):
             +"/".join(show(k) for k in BREADTH_KEYS[:3])+"；涨停/跌停 "
             +"/".join(show(k) for k in BREADTH_KEYS[3:5])+"；样本成交额(亿元) "+show("total_amount")
             +"；来源 "+show("provider")+"；交易日 "+show("trade_date")+"。不得推测缺失值或全市场情绪。")
+
+def previous_turnover(current, prior, previous_session):
+    """Compare completed sessions only with identical provider universe and units."""
+    result=dict(current or {})
+    if not current or not prior: return result
+    keys=("provider","scope","turnover_unit","universe_hash")
+    a,b=number(current.get("total_amount")),number(prior.get("total_amount"))
+    day=trade_day(previous_session)
+    if (not day or not trade_day(current.get("trade_date"))
+        or day>=trade_day(current["trade_date"]) or trade_day(prior.get("trade_date"))!=day
+        or not all(current.get(k) and current.get(k)==prior.get(k) for k in keys)
+        or not all(d.get("completed_session") and d.get("breadth_usable") for d in (current,prior))
+        or a is None or b is None or min(a,b)<=0): return result
+    result.update(previous_total_amount=b,previous_trade_date=day,turnover_change_pct=round((a/b-1)*100,4))
+    return result
+
+def limit_pool(df, day, side):
+    out=dict(source="akshare_em_"+side+"_pool",requested_trade_date=trade_day(day),
+             scope="provider_pool",status="UNAVAILABLE",count=None)
+    if df is None or df.empty or "代码" not in df.columns: return out
+    codes=[equity_code(x) for x in df["代码"]]
+    if any(c is None for c in codes): return out
+    if "交易日期" in df.columns and any(trade_day(d)!=out["requested_trade_date"] for d in df["交易日期"]): return out
+    out.update(status="UNVERIFIED",count=len(set(codes)))
+    return out
