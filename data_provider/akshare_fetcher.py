@@ -1933,6 +1933,14 @@ class AkshareFetcher(BaseFetcher):
             import time as _time
             api_start = _time.time()
             
+            from src.chip_data_quality import enabled, akshare_snapshot, expected_day
+            if enabled():
+                target = expected_day()
+                if not target:
+                    return None
+                df = _akshare_call_with_timeout(ak.stock_cyq_em, symbol=stock_code, adjust="",
+                    timeout=self._market_stats_call_timeout, call_name="ak.stock_cyq_em")
+                return akshare_snapshot(df, stock_code, target)
             df = ak.stock_cyq_em(symbol=stock_code)
             
             api_elapsed = _time.time() - api_start
