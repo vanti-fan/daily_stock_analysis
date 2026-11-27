@@ -333,12 +333,34 @@ def provider_health_pages(report, stamp):
     body+=section("统计口径","<p>供应层调用，不等于HTTP请求；缓存、跳过、未完成及未配对事件不计入成功率。</p>")
     body+=section("数据类别",table(["类别","观测状态"],[[r["category"],"已观测" if r["status"]=="OBSERVED" else "未观测"] for r in report["categories"]]))
     pages=[("provider-health-overview",page("接口健康度",stamp,body,label))]
-    for i in range(0,len(rows),6):
-        records=[[r["provider"],r["category"],r["completed"],f'{r["success_rate"]:.0%}' if r["success_rate"] is not None else MISSING,
-                  r["p95_ms"] if r["p95_ms"] is not None else MISSING] for r in rows[i:i+6]]
+    category_labels = {
+        "daily_data":"日线", "realtime_quote":"实时行情", "chip":"筹码",
+        "market_indices":"指数", "market_stats":"市场宽度",
+        "sector_rankings":"行业", "concept_rankings":"概念", "fundamental":"基本面",
+    }
+    status_labels = {
+        "SUCCESS":"成功", "EMPTY":"空结果", "TIMEOUT":"超时",
+        "ACCESS_DENIED":"权限", "RATE_LIMITED":"限流", "NETWORK_ERROR":"网络",
+        "UPSTREAM_ERROR":"上游错误", "PAYMENT_REQUIRED":"余额不足",
+        "UNKNOWN_ERROR":"未知错误", "PARTIAL":"部分有效", "CACHE_HIT":"缓存",
+        "SKIPPED":"跳过", "INCOMPLETE":"未完成", "UNPAIRED":"未配对",
+    }
+    # Keep the original 1800 CSS-pixel guard: paginate instead of shrinking
+    # fonts or producing a long screenshot. Full identifiers remain in JSON.
+    for i in range(0,len(rows),3):
+        chunk=rows[i:i+3]
+        records=[[compact(r["provider"],24), category_labels.get(r["category"],compact(r["category"],20)),
+                  r["completed"],f'{r["success_rate"]:.0%}' if r["success_rate"] is not None else MISSING,
+                  r["p95_ms"] if r["p95_ms"] is not None else MISSING] for r in chunk]
         body=section("供应层调用统计",table(["来源","类别","完成","成功率","P95 ms"],records))
-        body+=section("异常分类",table(["来源","类别","状态计数"],[[r["provider"],r["category"],", ".join(f"{k}: {v}" for k,v in sorted(r["status_counts"].items()))] for r in rows[i:i+6]]))
-        pages.append(("provider-health-"+str(i//6+1).zfill(2),page("供应商健康度明细",stamp,body,label)))
+        errors=[]
+        for r in chunk:
+            source=compact(r["provider"],24)+" / "+category_labels.get(r["category"],compact(r["category"],20))
+            counts=" · ".join(f"{status_labels.get(k,compact(k,18))} {v}" for k,v in sorted(r["status_counts"].items()))
+            errors.append([source,counts])
+        body+=section("状态计数",table(["来源 / 类别","状态计数"],errors))
+        body+=section("统计说明","<p>完整供应商及接口名称、状态明细见 provider-health.json；成功率不包含缓存、跳过、未完成及未配对记录。</p>")
+        pages.append(("provider-health-"+str(i//3+1).zfill(2),page("供应商健康度明细",stamp,body,label)))
     return pages
 
 
