@@ -4259,6 +4259,22 @@ class SearchService:
         Returns:
             SearchResponse 对象
         """
+        from src import news_source_quality as nq
+        if nq.enabled() and nq.eligible(stock_code):
+            query=" ".join(focus_keywords) if focus_keywords else f"{stock_name} {stock_code} 股票 最新消息"
+            days=self._effective_news_window_days()
+            key=self._cache_key(f"strict-news:{stock_code}:{stock_name}:{query}:{nq.today_cn()}",max_results,days)
+            cached,owner,event,_=self._get_cached_or_wait_for_reservation(key)
+            try:
+                if cached is not None:
+                    response=cached
+                else:
+                    response,_=nq.route(self,stock_code,stock_name,query,"latest_news",days,max_results)
+                    if response.results: self._put_cache(key,response)
+                nq.archive_response(response,stock_code)
+                return response
+            finally:
+                if owner and event is not None: self._release_cache_fill(key,event)
         # 策略窗口优先：ultra_short/short/medium/long = 1/3/7/30 天，
         # 并统一受 NEWS_MAX_AGE_DAYS 上限约束。
         search_days = self._effective_news_window_days()
@@ -4636,6 +4652,18 @@ class SearchService:
         Returns:
             {维度名称: SearchResponse} 字典
         """
+        from src import news_source_quality as nq
+        if nq.enabled() and nq.eligible(stock_code):
+            results={}
+            budget=max(0,int(max_searches))
+            for dimension,terms in (("latest_news","最新消息"),("announcements","公司公告"),("risk_check","减持 处罚 诉讼 风险"),("earnings","业绩 财报"),("industry","行业动态")):
+                if budget<=0: break
+                response,used=nq.route(self,stock_code,stock_name,f"{stock_name} {stock_code} {terms}",dimension,self._effective_news_window_days(),3,budget=min(2,budget))
+                results[dimension]=response
+                nq.archive_response(response,stock_code)
+                budget-=used
+                if not used: break
+            return results
         results = {}
         search_count = 0
 
@@ -4933,6 +4961,10 @@ class SearchService:
                     else:
                         date_str = " [日期未知·勿作短期催化]"
                     lines.append(f"  {i}. {r.title}{date_str}")
+                    if getattr(resp,"news_quality",None):
+                        lines.append("     来源："+r.url+"；"+ "；".join(r.relevance_reasons or []))
+                        lines.append("     搜索摘要未独立核实；重大事项须官方证据确认。")
+
                     # 如果摘要太短，可能信息量不足
                     snippet = r.snippet[:150] if len(r.snippet) > 20 else r.snippet
                     lines.append(f"     {snippet}...")
