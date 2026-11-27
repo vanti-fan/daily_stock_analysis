@@ -322,6 +322,26 @@ def quality_metric(field, key):
     return f"{v:,.2f}"
 
 
+def provider_health_pages(report, stamp):
+    rows=report["providers"]
+    label="PROVIDER HEALTH / "+report["profile"]
+    completed=sum(r["completed"] for r in rows)
+    successes=sum(r["success"] for r in rows)
+    body=section("调用观测概览",grid([
+        ("已完成调用",completed,""),("成功调用",successes,""),
+        ("成功率",f"{successes/completed:.1%}" if completed else MISSING,"")]))
+    body+=section("统计口径","<p>供应层调用，不等于HTTP请求；缓存、跳过、未完成及未配对事件不计入成功率。</p>")
+    body+=section("数据类别",table(["类别","观测状态"],[[r["category"],"已观测" if r["status"]=="OBSERVED" else "未观测"] for r in report["categories"]]))
+    pages=[("provider-health-overview",page("接口健康度",stamp,body,label))]
+    for i in range(0,len(rows),6):
+        records=[[r["provider"],r["category"],r["completed"],f'{r["success_rate"]:.0%}' if r["success_rate"] is not None else MISSING,
+                  r["p95_ms"] if r["p95_ms"] is not None else MISSING] for r in rows[i:i+6]]
+        body=section("供应层调用统计",table(["来源","类别","完成","成功率","P95 ms"],records))
+        body+=section("异常分类",table(["来源","类别","状态计数"],[[r["provider"],r["category"],", ".join(f"{k}: {v}" for k,v in sorted(r["status_counts"].items()))] for r in rows[i:i+6]]))
+        pages.append(("provider-health-"+str(i//6+1).zfill(2),page("供应商健康度明细",stamp,body,label)))
+    return pages
+
+
 def quality_pages(rows, stamp, *, scenario=None):
     from src.data_quality_manager import source_coverage
     stocks=[r["data_quality"] for r in rows if "data_quality" in r]
@@ -649,6 +669,10 @@ def send_batch(notifier, rows, results, report):
     try:
         pages=stock_pages(notifier,rows,results,report)
         pages+=quality_pages(rows,_extract_date(report,date.today()))
+        from src.provider_health_monitor import enabled,build_report
+        if enabled():
+            import os
+            pages+=provider_health_pages(build_report(os.environ["DSA_PROVIDER_HEALTH_JOURNAL"]),_extract_date(report,date.today()))
     except Exception as exc:
         logger.warning("Stock dashboard build failed (%s)",type(exc).__name__)
         return bool(notifier.send_to_telegram(status_text(rows)+"\n\n"+report))
