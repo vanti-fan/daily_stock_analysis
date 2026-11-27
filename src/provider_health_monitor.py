@@ -43,7 +43,7 @@ def classify(error_type=None, exception=None, http_status=None):
         http_status = getattr(response, "status_code", None) or getattr(exception, "code", None) or http_status
         error_type = type(exception).__name__
     t = re.sub(r"[^a-z0-9]", "", str(error_type or "").lower())
-    if t in {"unsupported","notsupported","unavailable","circuitopen","skipped","cancelled","budgetexhausted","quarantined","poolexhausted"}:
+    if t in {"skipped","unsupported","notsupported","unavailable","circuitopen","skipped","cancelled","budgetexhausted","quarantined","poolexhausted"}:
         return "SKIPPED"
     if http_status == 402 or t in {"paymentrequired","insufficientbalance"}: return "PAYMENT_REQUIRED"
     if http_status in (401,403) or t in {"permissionerror","accessdenied","permissiondenied","authenticationerror","authorizationerror","unauthorized","forbidden"}: return "ACCESS_DENIED"
@@ -51,7 +51,7 @@ def classify(error_type=None, exception=None, http_status=None):
     if http_status in (408,504) or isinstance(exception, TimeoutError) or t in {"timeout","timeouterror","readtimeout","connecttimeout","readtimeouterror","connecttimeouterror","timeoutexception"}: return "TIMEOUT"
     if t in {"empty","emptydataerror","noresults"}: return "EMPTY"
     if isinstance(exception, ConnectionError) or t in {"connectionerror","connecterror","networkerror","proxyerror","sslerror","gaierror","urlerror"}: return "NETWORK_ERROR"
-    if isinstance(http_status,int) and 500 <= http_status < 600: return "UPSTREAM_ERROR"
+    if t == "upstreamerror" or isinstance(http_status,int) and 500 <= http_status < 600: return "UPSTREAM_ERROR"
     if t in {"partial","incomplete"}: return "PARTIAL"
     return "UNKNOWN_ERROR"
 
