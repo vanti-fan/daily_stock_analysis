@@ -35,6 +35,7 @@ from src.data.stock_index_loader import get_index_stock_name
 from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name, lookup_static_stock_name
 from src.services.market_symbol_utils import is_suffix_market_symbol
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
+from src.provider_health_monitor import observe_call
 from src.services.stock_list_parser import AnalysisTarget, ParseStatus, parse_analysis_target
 from .fundamental_adapter import AkshareFundamentalAdapter
 from .yfinance_fundamental_adapter import YfinanceFundamentalAdapter
@@ -3428,7 +3429,9 @@ class DataFetcherManager:
             tickflow_fetcher = self._get_tickflow_fetcher()
             if tickflow_fetcher is not None:
                 try:
-                    data = tickflow_fetcher.get_main_indices(region=region)
+                    data = observe_call("market_indices", tickflow_fetcher.name, "get_main_indices",
+                    lambda: tickflow_fetcher.get_main_indices(region=region),
+                    supported=getattr(type(tickflow_fetcher), "get_main_indices", None) is not getattr(BaseFetcher, "get_main_indices", None), ranking=False)
                     if data:
                         logger.info("[TickFlowFetcher] fetched index quotes")
                         return data
@@ -3439,7 +3442,9 @@ class DataFetcherManager:
             if region == "cn" and fetcher.name == "TickFlowFetcher":
                 continue
             try:
-                data = fetcher.get_main_indices(region=region)
+                data = observe_call("market_indices", fetcher.name, "get_main_indices",
+                    lambda: fetcher.get_main_indices(region=region),
+                    supported=getattr(type(fetcher), "get_main_indices", None) is not getattr(BaseFetcher, "get_main_indices", None), ranking=False)
                 if data:
                     logger.info(f"[{fetcher.name}] fetched index quotes")
                     return data
@@ -3458,7 +3463,9 @@ class DataFetcherManager:
         if tickflow_fetcher is not None:
             started_at = time.monotonic()
             try:
-                data = tickflow_fetcher.get_market_stats(**stats_kwargs)
+                data = observe_call("market_stats", tickflow_fetcher.name, "get_market_stats",
+                    lambda: tickflow_fetcher.get_market_stats(**stats_kwargs),
+                    supported=getattr(type(tickflow_fetcher), "get_market_stats", None) is not getattr(BaseFetcher, "get_market_stats", None), ranking=False)
                 elapsed = time.monotonic() - started_at
                 if data:
                     logger.info(
@@ -3489,7 +3496,9 @@ class DataFetcherManager:
                 continue
             started_at = time.monotonic()
             try:
-                data = fetcher.get_market_stats(**stats_kwargs)
+                data = observe_call("market_stats", fetcher.name, "get_market_stats",
+                    lambda: fetcher.get_market_stats(**stats_kwargs),
+                    supported=getattr(type(fetcher), "get_market_stats", None) is not getattr(BaseFetcher, "get_market_stats", None), ranking=False)
                 elapsed = time.monotonic() - started_at
                 if data:
                     logger.info(
@@ -3521,7 +3530,7 @@ class DataFetcherManager:
         logger.warning("[MarketStats] component=market_stats action=complete status=empty purpose=%s", purpose)
         return {}
 
-    def _run_with_timeout(
+    def _run_with_timeout_unobserved(
         self,
         task: Callable[[], Any],
         timeout_seconds: float,
@@ -3604,6 +3613,40 @@ class DataFetcherManager:
         if "value" in error_holder:
             return None, str(error_holder["value"]), int((time.monotonic() - start) * 1000)
         return result_holder.get("value"), None, int((time.monotonic() - start) * 1000)
+
+    def _run_with_timeout(
+        self, task, timeout_seconds, task_name, *, quarantine_key=None,
+    ):
+        from src.provider_health_monitor import enabled, classify
+        if not enabled() or quarantine_key is None:
+            return self._run_with_timeout_unobserved(
+                task, timeout_seconds, task_name, quarantine_key=quarantine_key)
+        provider, operation = quarantine_key
+        data_type = "fundamental"
+        started = Event()
+        def observed_task():
+            started.set()
+            return task()
+        record_provider_run_started(data_type=data_type, provider=provider, operation=operation)
+        try:
+            result, err, elapsed = self._run_with_timeout_unobserved(
+                observed_task, timeout_seconds, task_name, quarantine_key=quarantine_key)
+        except Exception as exc:
+            record_provider_run(data_type=data_type, provider=provider, operation=operation,
+                                success=False, error_type=classify(exception=exc))
+            raise
+        status = result.get("status") if isinstance(result, dict) else None
+        error_type = ("skipped" if not started.is_set()
+                      else "timeout" if err == f"{task_name} timeout"
+                      else "unknown" if err
+                      else "not_supported" if status == "not_supported"
+                      else "partial" if status == "partial"
+                      else "unknown" if status == "failed"
+                      else "empty" if result is None or result == {}
+                      else None)
+        record_provider_run(data_type=data_type, provider=provider, operation=operation,
+                            success=error_type is None, error_type=error_type, latency_ms=elapsed)
+        return result, err, elapsed
 
     def _run_with_retry(
         self,
@@ -4105,6 +4148,8 @@ class DataFetcherManager:
                 if cache_item:
                     age = time.time() - float(cache_item.get("ts", 0))
                     if age <= cache_ttl:
+                        record_provider_run(data_type="fundamental", provider="shared_cache",
+                                            operation="get_fundamental_context", success=True, cache_hit=True)
                         return cache_item.get("context", {})
 
         result_ctx: Dict[str, Any] = {
@@ -4468,6 +4513,8 @@ class DataFetcherManager:
                 if cache_item:
                     age = time.time() - float(cache_item.get("ts", 0))
                     if age <= cache_ttl:
+                        record_provider_run(data_type="fundamental", provider="shared_cache",
+                                            operation="get_fundamental_context", success=True, cache_hit=True)
                         return cache_item.get("context", {})
 
         remaining_seconds = stage_timeout
@@ -4999,7 +5046,9 @@ class DataFetcherManager:
 
                 start = time.time()
                 try:
-                    data = fetcher.get_sector_rankings(n)
+                    data = observe_call("sector_rankings", fetcher.name, "get_sector_rankings",
+                    lambda: fetcher.get_sector_rankings(n),
+                    supported=getattr(type(fetcher), "get_sector_rankings", None) is not getattr(BaseFetcher, "get_sector_rankings", None), ranking=True)
                     duration_ms = int((time.time() - start) * 1000)
                     if data and data[0] is not None and data[1] is not None:
                         source_chain.append(
@@ -5078,6 +5127,8 @@ class DataFetcherManager:
         with self.__class__._concept_rankings_cache_lock:
             cached = self.__class__._concept_rankings_cache.get(normalized_n)
             if cached and cached[0] > now:
+                record_provider_run(data_type="concept_rankings", provider="shared_cache",
+                                    operation="get_concept_rankings", success=bool(cached[1] or cached[2]), cache_hit=True)
                 logger.debug("[concept rankings] shared cache hit n=%s", normalized_n)
                 return self._copy_ranking_rows(cached[1]), self._copy_ranking_rows(cached[2])
 
@@ -5085,7 +5136,9 @@ class DataFetcherManager:
             bottom: List[Dict] = []
             for fetcher in self._get_fetchers_snapshot():
                 try:
-                    data = fetcher.get_concept_rankings(normalized_n)
+                    data = observe_call("concept_rankings", fetcher.name, "get_concept_rankings",
+                    lambda: fetcher.get_concept_rankings(normalized_n),
+                    supported=getattr(type(fetcher), "get_concept_rankings", None) is not getattr(BaseFetcher, "get_concept_rankings", None), ranking=True)
                     if data and (data[0] or data[1]):
                         top = data[0] or []
                         bottom = data[1] or []
