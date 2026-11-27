@@ -199,7 +199,11 @@ def assess_stock(root, index, row):
     raw_boards=(board_data or {}).get("belong_boards") if isinstance(board_data,dict) else None
     if isinstance(raw_boards,dict): raw_boards=raw_boards.get("data")
     boards=[{k:b.get(k) for k in ("name","code","type","source")} for b in (raw_boards or []) if isinstance(b,dict) and b.get("name")] if isinstance(raw_boards,list) else []
-    return {**({"chip_quality":chip_meta} if chip_meta is not None else {}),"boards":boards,"code":code,"name":identity.get("name") or row.get("name") or code,"query_id":query_id,
+    from src import news_source_quality as nq
+    news_meta=None
+    if nq.eligible(code) and (nq.enabled() or any(x["kind"]=="stock-news" and x["identity"]==code and x["query_id"]==query_id for x in index)):
+        news_meta=nq.assess_archive(root,index,code,query_id)
+    return {**({"news_quality":news_meta} if news_meta is not None else {}),**({"chip_quality":chip_meta} if chip_meta is not None else {}),"boards":boards,"code":code,"name":identity.get("name") or row.get("name") or code,"query_id":query_id,
             "expected_trade_date":expected,"archive_reason":model_reason,"quote_status":quote_status,
             "groups":groups,"coverage":{k:summarize(v.values()) for k,v in groups.items()},
             "required_quote_coverage":required,"history":history_summary,
