@@ -1123,6 +1123,9 @@ class EfinanceFetcher(BaseFetcher):
         获取市场涨跌统计 (efinance)
         """
         import efinance as ef
+        from src.market_data_quality import enabled
+        if enabled():
+            allow_cache = False
 
         try:
             self._set_random_user_agent()
