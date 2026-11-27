@@ -781,6 +781,10 @@ class StockAnalysisPipeline:
             else:
                 try:
                     chip_data = self.fetcher_manager.get_chip_distribution(code)
+                    from src import chip_data_quality as cq
+                    if cq.enabled() and cq.snapshot_error(chip_data, normalize_stock_code(code), daily_market_target_date):
+                        chip_data = None
+
                     if chip_data:
                         logger.info(
                             f"{log_stock_name}({code}) chip distribution: profit_ratio={chip_data.profit_ratio:.1%}, "
@@ -1380,7 +1384,8 @@ class StockAnalysisPipeline:
                 'avg_cost': chip_data.avg_cost,
                 'concentration_90': chip_data.concentration_90,
                 'concentration_70': chip_data.concentration_70,
-                'chip_status': chip_data.get_chip_status(current_price or 0),
+                'chip_status': ("模型估算，仅供参考" if getattr(chip_data,"data_kind",None) else chip_data.get_chip_status(current_price or 0)),
+                **({k:getattr(chip_data,k) for k in ("code","date","source","data_kind","price_basis","present_fields","cost_90_low","cost_90_high","cost_70_low","cost_70_high")} if getattr(chip_data,"data_kind",None) else {}),
             }
         
         # 添加趋势分析结果
