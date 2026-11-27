@@ -1,0 +1,145 @@
+"""Phase 2.4.3 A-share routing policy. No network calls in policy functions."""
+from __future__ import annotations
+import math
+import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+BASELINE = "f199f645607b6626914bdb1756254c0c9daa12c9"
+HISTORY = {"AkshareFetcher":"QFQ", "EfinanceFetcher":"QFQ", "BaostockFetcher":"QFQ",
+           "TencentFetcher":"QFQ", "TushareFetcher":"UNADJUSTED", "PytdxFetcher":"UNKNOWN"}
+GROUPS = {"tencent":"tencent", "akshare_qq":"tencent", "akshare_sina":"sina",
+          "akshare_em":"eastmoney", "efinance":"eastmoney", "akshare_xq":"xueqiu",
+          "tushare":"tushare", "tickplus":"tickplus", "tickflow":"tickflow"}
+DAILY_GROUPS = {"EfinanceFetcher":"eastmoney","BaostockFetcher":"baostock",
+                "TencentFetcher":"tencent","AkshareFetcher":"MULTI"}
+class AdjustmentError(ValueError):
+    pass
+
+def enabled():
+    return os.getenv("DSA_INTELLIGENT_FALLBACK","").lower()=="true"
+
+def ordinary_a_share(code):
+    # Deliberately limited to ordinary Shanghai/Shenzhen equities; ETFs,
+    # indexes, BSE and offshore assets retain upstream policy.
+    return isinstance(code,str) and len(code)==6 and code.isdigit() and code.startswith(("000","001","002","003","300","301","600","601","603","605","688","689"))
+
+def history_order(fetchers):
+    """Exclude unreviewed or non-QFQ paths, preserve configured priority as tie-breaker."""
+    candidates=[f for f in fetchers if HISTORY.get(f.name)=="QFQ"]
+    return ranked(candidates,lambda f:f.name,DAILY_GROUPS,"daily_data")
+
+def ranked(items,key,groups,category):
+    items=list(items)
+    # Only use run-local evidence. Sparse data is not a reason to change order.
+    path=os.getenv("DSA_PROVIDER_HEALTH_JOURNAL")
+    evidence={}
+    if path and Path(path).is_file():
+        try:
+            from src.provider_health_monitor import build_report
+            for r in build_report(path)["providers"]:
+                if r["category"]==category and r["completed"]>=3 and r["success_rate"] is not None:
+                    evidence[r["provider"]]=r
+        except (OSError,ValueError,KeyError,TypeError):
+            pass
+    def rank(item):
+        name=key(item)
+        r=evidence.get(name)
+        # Defer demonstrated low-success routes; do not punish unobserved ones.
+        return int(bool(r and r["success_rate"]<.5))
+    ordered=sorted(items,key=rank)
+    # Prefer distinct reviewed dependencies ahead of redundant routes,
+    # without skipping them entirely. MULTI/unknown are not independent proof.
+    first=[]; deferred=[]; seen=set()
+    for item in ordered:
+        group=groups.get(key(item))
+        if group and group!="MULTI" and group in seen:
+            deferred.append(item)
+        else:
+            first.append(item)
+            if group and group!="MULTI": seen.add(group)
+    return first+deferred
+
+def quote_order(routes):
+    out=[]
+    for route in routes:
+        route="tencent" if route=="akshare_qq" else route
+        if route not in out: out.append(route)
+    return ranked(out,lambda x:x,GROUPS,"realtime_quote")
+
+def mark_history(df,provider,route=None):
+    df.attrs["dsa_history"]={"provider":provider,"route":route or provider,
+        "adjustment":"QFQ","evidence":"REVIEWED_REQUEST_CONTRACT",
+        "anchor":"PROVIDER_CURRENT_BASE_UNVERIFIED",
+        "volume_unit":"shares","currency":"CNY"}
+    return df
+
+def validate_history(df,provider,*,start_date=None,end_date=None):
+    import pandas as pd
+    if HISTORY.get(provider)!="QFQ":
+        raise AdjustmentError("Provider does not have a reviewed QFQ contract")
+    if df is None or df.empty: raise AdjustmentError("Empty history")
+    meta=df.attrs.get("dsa_history",{})
+    if meta.get("adjustment")!="QFQ" or meta.get("provider")!=provider:
+        raise AdjustmentError("Missing or incompatible adjustment evidence")
+    dates=pd.to_datetime(df["date"],errors="coerce")
+    if dates.isna().any() or dates.duplicated().any() or not dates.is_monotonic_increasing:
+        raise AdjustmentError("Invalid history dates")
+    if (start_date and dates.min().date()<pd.Timestamp(start_date).date()) or (end_date and dates.max().date()>pd.Timestamp(end_date).date()):
+        raise AdjustmentError("History outside requested range")
+    prices=df[["open","high","low","close"]].apply(pd.to_numeric,errors="coerce")
+    if not all(math.isfinite(v) and v>0 for v in prices.to_numpy().ravel()):
+        raise AdjustmentError("Invalid OHLC")
+    if ((prices.high<prices[["open","close","low"]].max(axis=1)) |
+        (prices.low>prices[["open","close","high"]].min(axis=1))).any():
+        raise AdjustmentError("OHLC ordering conflict")
+    meta["first_date"]=dates.iloc[0].date().isoformat()
+    meta["last_date"]=dates.iloc[-1].date().isoformat()
+    return df
+
+def validate_storage_window(incoming,existing):
+    """No partial upsert over old price bases. Refuse rather than delete old data."""
+    if not set(existing).issubset(set(incoming)):
+        raise AdjustmentError("Existing history extends outside replacement window; refusing mixed snapshot")
+
+def source_name(quote):
+    src=getattr(quote,"source",None)
+    return getattr(src,"value",str(src or "UNKNOWN"))
+
+def quote_lineage(quote):
+    fields=("price","change_pct","change_amount","volume","amount","open_price","high","low","pre_close",
+            "volume_ratio","turnover_rate","pe_ratio","pb_ratio","total_mv","circ_mv","amplitude")
+    lineage=getattr(quote,"field_sources",None)
+    if lineage is None:
+        lineage={}
+        quote.field_sources=lineage
+    for field in fields:
+        if getattr(quote,field,None) is not None and field not in lineage:
+            lineage[field]={"source":source_name(quote),"timestamp":getattr(quote,"provider_timestamp",None),
+                            "quote_date":getattr(quote,"quote_date",None)}
+    return lineage
+
+def _timestamp(value):
+    try:
+        dt=datetime.fromisoformat(str(value).replace("Z","+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone(timedelta(hours=8)))
+    except (ValueError,TypeError): return None
+
+def compatible_quotes(primary,secondary):
+    if getattr(primary,"code",None)!=getattr(secondary,"code",None): return False
+    if getattr(primary,"currency",None) and getattr(secondary,"currency",None) and primary.currency!=secondary.currency: return False
+    a,b=(_timestamp(getattr(q,"provider_timestamp",None)) for q in (primary,secondary))
+    # No fabricated fetch-time or same-day substitution for market timestamps.
+    if a is None or b is None or abs((a-b).total_seconds())>600: return False
+    cn=timezone(timedelta(hours=8))
+    if a.astimezone(cn).date()!=b.astimezone(cn).date(): return False
+    try:
+        p,s=float(primary.price),float(secondary.price)
+        return math.isfinite(p) and math.isfinite(s) and p>0 and abs(p-s)/p<=.01
+    except (ValueError,TypeError): return False
+
+def valid_quote_value(field,value):
+    try:
+        n=float(value)
+        return math.isfinite(n) and (field=="pe_ratio" or n>=0)
+    except (ValueError,TypeError): return False
