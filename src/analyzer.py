@@ -968,6 +968,11 @@ def _mark_chip_structure_unavailable(result: "AnalysisResult", language: str) ->
 
 def normalize_chip_structure_availability(result: "AnalysisResult", chip_data: Any) -> None:
     """Fill valid chip metrics or collapse placeholder-only chip fields to one fallback line."""
+    from src import chip_data_quality as cq
+    if cq.enabled():
+        cq.enforce_report(result, chip_data)
+        return
+
     if not result:
         return
     language = getattr(result, "report_language", "zh")
