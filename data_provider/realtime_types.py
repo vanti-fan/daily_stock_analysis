@@ -222,6 +222,12 @@ class ChipDistribution:
     cost_70_low: float = 0.0      # 70%筹码成本下限
     cost_70_high: float = 0.0     # 70%筹码成本上限
     concentration_70: float = 0.0  # 70%筹码集中度
+    # Explicit provenance and presence contract for Phase 2.4.5.
+    data_kind: Optional[str] = None
+    price_basis: Optional[str] = None
+    present_fields: Optional[List[str]] = None
+    evidence: Optional[Dict[str, Any]] = None
+
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -235,6 +241,10 @@ class ChipDistribution:
             'cost_90_high': self.cost_90_high,
             'concentration_90': self.concentration_90,
             'concentration_70': self.concentration_70,
+            'cost_70_low': self.cost_70_low,
+            'cost_70_high': self.cost_70_high,
+            **({'data_kind': self.data_kind, 'price_basis': self.price_basis,
+                'present_fields': self.present_fields, 'evidence': self.evidence} if self.data_kind else {}),
         }
     
     def get_chip_status(self, current_price: float) -> str:
