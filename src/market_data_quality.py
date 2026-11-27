@@ -4,7 +4,7 @@ import math
 import hashlib
 import os
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 INDEX_NAMES = {"sh000001":"上证指数","sz399001":"深证成指","sz399006":"创业板指",
@@ -38,7 +38,23 @@ def date_state(value):
     d=trade_day(value)
     if not d: return "UNVERIFIED"
     today=china_now().date().isoformat()
-    return "CURRENT_DATE" if d==today else "PRIOR_DATE" if d<today else "INVALID"
+    if d>today: return "INVALID"
+    expected=expected_session()
+    if expected is None: return "UNVERIFIED"
+    return "CURRENT_DATE" if d==expected else "PRIOR_DATE" if d<expected else "INVALID"
+
+def session_dates(now=None):
+    from src.core.trading_calendar import get_trading_dates
+    now=now or china_now()
+    days=get_trading_dates("cn",now.date()-timedelta(days=30),now.date())
+    return [d.date().isoformat() for d in days] if days is not None else []
+
+def expected_session(now=None):
+    now=now or china_now()
+    days=session_dates(now)
+    if days and days[-1]==now.date().isoformat() and now.strftime("%H:%M")<"09:30":
+        days=days[:-1]
+    return days[-1] if days else None
 
 def equity_code(value):
     s=str(value).strip().lower()
@@ -51,7 +67,7 @@ def equity_code(value):
     if not exchange or any(x and x!=exchange for x in (prefix,suffix)): return None
     return exchange+code
 
-def breadth_from_frame(df, source, *, amount_multiplier=1, min_universe=MIN_UNIVERSE, known_date=None):
+def breadth_from_frame(df, source, *, amount_multiplier=1, min_universe=MIN_UNIVERSE, known_date=None, require_row_date=False, completed_session=False):
     """Deduplicate; count valid traded shares; never estimate exchange limit rules.
     The provider universe is not an independently verified exchange master list.
     """
@@ -63,17 +79,19 @@ def breadth_from_frame(df, source, *, amount_multiplier=1, min_universe=MIN_UNIV
              "upper":("涨停价","up_limit","limit_up_price"),"lower":("跌停价","down_limit","limit_down_price")}
     cols={k:next((v for v in vals if v in df.columns),None) for k,vals in aliases.items()}
     if not all(cols[k] for k in ("code","price","pre")): return None
-    seen={}; duplicates=set(); dates=set()
+    seen={}; duplicates=set(); dates=set(); missing_dates=0
     for row in df.to_dict("records"):
         code=equity_code(row.get(cols["code"]))
         if not code: continue
         d=trade_day(row.get(cols["date"]))
         if d: dates.add(d)
+        else: missing_dates+=1
         vals=tuple(number(row.get(cols[k])) for k in ("price","pre","amount","upper","lower"))
         if code in seen and seen[code]!=vals: duplicates.add(code)
         seen[code]=vals
     if len(dates)>1 or (known_date and dates and dates!={trade_day(known_date)}): return None
-    day=trade_day(known_date) or next(iter(dates),None)
+    if require_row_date and (missing_dates or not dates): return None
+    day=trade_day(known_date) or (next(iter(dates),None) if not missing_dates else None)
     if date_state(day)=="INVALID": return None
     up=down=flat=limit_up=limit_down=limit_eligible=amount_valid=valid=suspended=0
     amount=0.0
@@ -85,7 +103,7 @@ def breadth_from_frame(df, source, *, amount_multiplier=1, min_universe=MIN_UNIV
         valid+=1
         up+=int(p>pre); down+=int(p<pre); flat+=int(p==pre)
         if a is not None:
-            amount+=a*amount_multiplier; amount_valid+=1
+            if amount_multiplier is not None: amount+=a*amount_multiplier; amount_valid+=1
         if upper is not None and lower is not None and 0<lower<=pre<=upper and upper>lower:
             limit_eligible+=1
             limit_up+=int(abs(p-upper)<0.000001); limit_down+=int(abs(p-lower)<0.000001)
@@ -93,16 +111,16 @@ def breadth_from_frame(df, source, *, amount_multiplier=1, min_universe=MIN_UNIV
     universe=len(seen)
     coverage=valid+suspended
     sufficient=universe>=min_universe and coverage/universe>=.95 and not duplicates
-    complete_amount=sufficient and amount_valid==universe and amount>0
+    complete_amount=sufficient and amount_multiplier is not None and amount_valid==universe and amount>0
     complete_limits=sufficient and limit_eligible==valid
     return {"up_count":up,"down_count":down,"flat_count":flat,
             "limit_up_count":limit_up if complete_limits else None,
             "limit_down_count":limit_down if complete_limits else None,
             "total_amount":amount/1e8 if complete_amount else None,
-            "sample_amount":amount/1e8 if amount_valid else None,
+            "sample_amount":amount/1e8 if amount_valid and amount_multiplier is not None else None,
             "previous_total_amount":None,"turnover_change_pct":None,
             "universe_hash":hashlib.sha256("\n".join(sorted(seen)).encode()).hexdigest(),
-            "previous_trade_date":None,
+            "previous_trade_date":None,"completed_session":bool(completed_session),
             "provider":source,"trade_date":day,"date_status":date_state(day),
             "observed_at":china_now().isoformat(),"scope":SCOPE,"turnover_unit":"CNY_100M",
             "universe_count":universe,"valid_count":valid,"zero_amount_count":suspended,
@@ -204,11 +222,12 @@ def ranking_rows(data,provider,category,n):
             if name in rows and rows[name]!=item: conflicts.add(name)
             rows[name]=item
     valid=[r for k,r in rows.items() if k not in conflicts]
-    if len({r["classification"] for r in valid})>1 or len({r["trade_date"] for r in valid if r["trade_date"]})>1: return None
+    if len({r["classification"] for r in valid})>1 or len({r["trade_date"] for r in valid})>1: return None
     valid.sort(key=lambda r:(-r["change_pct"],r["name"]))
     if not valid: return None
     # Do not list the same sector on both sides of a small partial response.
-    top=valid[:n]; remaining=valid[n:]
+    cut=min(n,(len(valid)+1)//2) if len(valid)<2*n else n
+    top=valid[:cut]; remaining=valid[cut:]
     return top, list(reversed(remaining[-n:]))
 
 def quality_route(fetchers, category, method, call, normalize, complete, quality):
@@ -263,9 +282,32 @@ def previous_turnover(current, prior, previous_session):
 def limit_pool(df, day, side):
     out=dict(source="akshare_em_"+side+"_pool",requested_trade_date=trade_day(day),
              scope="provider_pool",status="UNAVAILABLE",count=None)
-    if df is None or df.empty or "代码" not in df.columns: return out
+    if not out["requested_trade_date"] or df is None or df.empty or "代码" not in df.columns: return out
     codes=[equity_code(x) for x in df["代码"]]
     if any(c is None for c in codes): return out
     if "交易日期" in df.columns and any(trade_day(d)!=out["requested_trade_date"] for d in df["交易日期"]): return out
     out.update(status="UNVERIFIED",count=len(set(codes)))
     return out
+
+def financial_market_model(payload):
+    from src.financial_data_adapters import field
+    from src.financial_data_model import DataStatus, Origin, json_safe
+    from dataclasses import asdict
+    def rec(k,v,unit,row,computed=False):
+        status=DataStatus.NOT_PROVIDED if v is None else DataStatus.STALE if row.get("date_status")=="PRIOR_DATE" else DataStatus.UNVERIFIED
+        return json_safe(asdict(field(k,v,unit,source=row.get("source") or row.get("provider"),
+            trade_date=row.get("trade_date"),observed_at=row.get("observed_at"),status=status,
+            origin=Origin.COMPUTED if computed else Origin.PROVIDER,
+            reason="provider_scope_or_date_not_independently_verified" if v is not None else "missing_provider_field")))
+    b=payload.get("breadth") or {}
+    breadth={k:rec(k,b.get(k),"CNY_100M" if "amount" in k else "%" if k.endswith("pct") else "count",b,True)
+             for k in (*BREADTH_KEYS,"previous_total_amount","turnover_change_pct")}
+    indices=[dict(code=r["code"],name=r["name"],fields={k:rec(k,r.get(k),"%" if k in ("change_pct","amplitude") else "index_points",r,k in ("change","change_pct"))
+              for k in ("current","prev_close","change","change_pct","open","high","low","amplitude")}) for r in payload.get("indices") or []]
+    sectors=[]
+    for category,key in (("industry","sectors"),("concept","concepts")):
+        for side in ("top","bottom"):
+            for r in (payload.get(key) or {}).get(side,[]):
+                sectors.append(dict(name=r["name"],category=category,classification=r.get("classification"),direction=side,
+                    fields={k:rec(k,r.get(k),"%" if k=="change_pct" else "CNY",r) for k in ("change_pct","amount")}))
+    return dict(schema_version="1.0",market="cn",breadth=breadth,indices=indices,sectors=sectors,limit_pools=b.get("limit_pools"))
