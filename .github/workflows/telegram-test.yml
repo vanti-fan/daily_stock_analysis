@@ -96,6 +96,11 @@ jobs:
           assert write_index(root) == 3
           PY
 
+      - name: Run Phase 2.4.1 offline source audit
+        run: |
+          python -m unittest discover -s tests -p test_data_source_audit.py -v
+          python -m src.data_source_audit --output image-test/phase241 --tushare-points 120
+
       - name: Run Phase 2.3 quality manager tests
         run: |
           python -m compileall -q src/data_quality_manager.py src/financial_dashboard.py src/core/pipeline.py
