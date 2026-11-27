@@ -780,11 +780,18 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         try:
             logger.info("[Market] %s action=get_market_stats status=start", self._log_context())
 
+            from src.market_data_quality import enabled, expected_session
+            if self.region=="cn" and enabled(): overview.breadth_quality={"status":"UNAVAILABLE"}
             stats = self.data_manager.get_market_stats(purpose=f"market_review:{self.region}")
 
             from src.market_data_quality import enabled, public_breadth
             if self.region=="cn" and enabled():
                 overview.breadth_quality=public_breadth(stats)
+                if not stats or stats.get("limit_up_count") is None or stats.get("limit_down_count") is None:
+                    day=expected_session()
+                    if day and (not stats or not stats.get("trade_date") or stats.get("trade_date")==day):
+                        try: overview.breadth_quality["limit_pools"]=self.data_manager.get_market_limit_pools(day)
+                        except Exception: pass
                 # Legacy consumers require numeric fields; never use unverified sample
                 # as a complete market breadth signal. Actual nullable observations
                 # are passed in breadth_quality and rendered separately.
@@ -1260,6 +1267,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             payload["breadth"]=dict(overview.breadth_quality)
             payload["index_coverage"]={"expected":6,"observed":len(overview.indices),
                                        "coverage_verified":False}
+            from src.market_data_quality import financial_market_model
+            payload["financial_market_data"]=financial_market_model(payload)
         return payload
 
     # ------------------------------------------------------------------
@@ -1932,6 +1941,12 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             }
             reasons = self._build_market_light_reasons_zh(overview, score)
 
+        if overview.breadth_quality is not None and scores["data_quality"]!="ok":
+            status="yellow"
+            temperature_label="Incomplete data" if self._get_review_language()=="en" else "数据不完整"
+            label_map[status]=temperature_label
+            guidance_map[status]="No complete market signal; verify missing dimensions." if self._get_review_language()=="en" else "不形成完整市场信号，等待数据确认。"
+            reasons=[guidance_map[status]]
         snapshot = MarketLightSnapshot(
             region=self.region,
             trade_date=overview.date,
@@ -2172,6 +2187,14 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if limit_available:
             limit_score = int(overview.limit_up_count / limit_total * 100)
 
+        if overview.breadth_quality is not None:
+            b=overview.breadth_quality
+            breadth_available=bool(breadth_available and b.get("coverage_verified") and b.get("date_status")=="CURRENT_DATE")
+            limit_available=bool(limit_available and breadth_available and b.get("limit_up_count") is not None and b.get("limit_down_count") is not None)
+            index_available=bool(len(overview.indices)==6 and all(i.date_status=="CURRENT_DATE" for i in overview.indices))
+            if not breadth_available: breadth_score=50
+            if not limit_available: limit_score=50
+            if not index_available: index_score=50
         dimensions = {
             "breadth": {"score": breadth_score, "available": breadth_available},
             "index": {"score": index_score, "available": index_available},
