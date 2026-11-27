@@ -2227,6 +2227,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 label = "震荡"
             else:
                 label = "偏弱"
+        if overview.breadth_quality is not None and data_quality != "ok":
+            label = "Incomplete data" if self._get_review_language() == "en" else "数据不完整"
         return {
             "score": score,
             "temperature_label": label,
