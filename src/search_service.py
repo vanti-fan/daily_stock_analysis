@@ -4584,6 +4584,12 @@ class SearchService:
         Returns:
             SearchResponse 对象
         """
+        from src import news_source_quality as nq
+        if nq.enabled() and nq.eligible(stock_code):
+            terms=event_types or ["年报预告","减持公告","业绩快报"]
+            response,_=nq.route(self,stock_code,stock_name,f"{stock_name} {stock_code} "+ " OR ".join(terms),"events",self._effective_news_window_days(),5)
+            nq.archive_response(response,stock_code)
+            return response
         if event_types is None:
             if self._is_foreign_stock(stock_code):
                 event_types = ["earnings report", "insider selling", "quarterly results"]
