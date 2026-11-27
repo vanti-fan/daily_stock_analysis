@@ -1316,7 +1316,7 @@ class EfinanceFetcher(BaseFetcher):
             change_col = '涨跌幅' if '涨跌幅' in df.columns else 'pct_chg'
             name_col = '股票名称' if '股票名称' in df.columns else 'name'
             from src.market_data_quality import enabled, rank_frame
-            if enabled(): return rank_frame(df,name_col,change_col,n,"efinance_industry","industry")
+            if enabled(): return rank_frame(df,name_col,change_col,n,"efinance_industry","industry",amount_multiplier=1)
             if change_col not in df.columns or name_col not in df.columns:
                 return None
 
@@ -1344,6 +1344,22 @@ class EfinanceFetcher(BaseFetcher):
             logger.error(f"[efinance] Failed to fetch sector rankings: {e}")
             return None
     
+    def get_concept_rankings(self, n: int = 5):
+        from src.market_data_quality import enabled, rank_frame
+        if not enabled(): return None
+        import efinance as ef
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+            df = _ef_call_with_timeout(ef.stock.get_realtime_quotes, ["概念板块"])
+            if df is None or df.empty: return None
+            name = "股票名称" if "股票名称" in df.columns else "name"
+            pct = "涨跌幅" if "涨跌幅" in df.columns else "pct_chg"
+            return rank_frame(df,name,pct,n,"efinance_concept","concept",amount_multiplier=1)
+        except Exception as exc:
+            logger.warning("efinance concept rankings failed (%s)",type(exc).__name__)
+            return None
+
     def get_base_info(self, stock_code: str) -> Optional[Dict[str, Any]]:
         """
         获取股票基本信息
