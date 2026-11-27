@@ -61,7 +61,8 @@ class TencentFetcher(BaseFetcher):
         )
         response.raise_for_status()
         payload = response.json()
-        rows = _extract_kline_rows(payload, symbol=symbol)
+        from src.intelligent_fallback import strict_history
+        rows = _extract_kline_rows(payload, symbol=symbol, require_qfq=strict_history(normalize_stock_code(stock_code)))
         if not rows:
             logger.info("TencentFetcher empty daily history for %s", stock_code)
             return _empty_daily_frame()
@@ -254,12 +255,12 @@ def _lots_to_shares(volume: Any, symbol: str = "") -> Any:
     return value if _is_star_market(symbol) else value * 100
 
 
-def _extract_kline_rows(payload: dict[str, Any], *, symbol: str) -> list[dict[str, Any]]:
+def _extract_kline_rows(payload: dict[str, Any], *, symbol: str, require_qfq: bool = False) -> list[dict[str, Any]]:
     data = payload.get("data") if isinstance(payload, dict) else None
     item = data.get(symbol) if isinstance(data, dict) else None
     if not isinstance(item, dict):
         return []
-    rows = item.get("qfqday") or item.get("day") or []
+    rows = item.get("qfqday") or ([] if require_qfq else item.get("day")) or []
     result: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, list) or len(row) < 6:

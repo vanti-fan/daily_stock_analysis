@@ -96,6 +96,14 @@ jobs:
           assert write_index(root) == 3
           PY
 
+      - name: Run Phase 2.4.3 offline routing and adjustment tests
+        run: |
+          mkdir -p image-test/phase243
+          python -m compileall -q src/intelligent_fallback.py data_provider/base.py data_provider/tencent_fetcher.py data_provider/akshare_fetcher.py data_provider/realtime_types.py src/storage.py src/core/pipeline.py
+          set -o pipefail
+          python -m unittest discover -s tests -p test_intelligent_fallback.py -v 2>&1 | tee image-test/phase243/test-results.txt
+          python -m unittest discover -s tests -p test_tencent_fetcher.py -v 2>&1 | tee image-test/phase243/tencent-regression.txt
+
       - name: Run Phase 2.4.2 offline health monitor tests
         run: |
           python -m compileall -q src/provider_health_monitor.py src/services/run_diagnostics.py data_provider/base.py

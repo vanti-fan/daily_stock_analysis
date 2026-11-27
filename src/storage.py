@@ -3619,6 +3619,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         batch_dates = list(records_by_date.keys())
 
         def _write(session: Session) -> int:
+            from src.intelligent_fallback import strict_history, validate_history, validate_storage_window
+            if strict_history(code):
+                validate_history(df, data_source)
+                old_dates = session.execute(select(StockDaily.date).where(StockDaily.code == code)).scalars().all()
+                validate_storage_window(batch_dates, old_dates)
             if self._is_sqlite_engine:
                 # SQLite has a per-statement bind-parameter limit (commonly 999).
                 # Each record has ~17 columns, so chunk upserts to stay within bounds.

@@ -105,6 +105,7 @@ class RealtimeSource(Enum):
     STOOQ = "stooq"                 # Stooq 美股兜底
     LONGBRIDGE = "longbridge"       # 长桥（美股/港股兜底）
     FUTU = "futu"                   # 富途 OpenD（港股）
+    XUEQIU = "xueqiu"
     FALLBACK = "fallback"           # 降级兜底
 
 
@@ -163,6 +164,8 @@ class UnifiedRealtimeQuote:
     high_52w: Optional[float] = None        # 52周最高
     low_52w: Optional[float] = None         # 52周最低
     
+    field_sources: Optional[Dict[str, Any]] = None
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典（过滤 None 值）"""
         result = {
@@ -173,7 +176,7 @@ class UnifiedRealtimeQuote:
         # 只添加非 None 的字段
         optional_fields = [
             'fetched_at', 'provider_timestamp', 'quote_date', 'is_stale', 'stale_seconds',
-            'fallback_from', 'market', 'currency', 'data_quality', 'missing_fields',
+            'fallback_from', 'market', 'currency', 'data_quality', 'missing_fields', 'field_sources',
             'price', 'change_pct', 'change_amount', 'volume', 'amount',
             'volume_ratio', 'turnover_rate', 'amplitude',
             'open_price', 'high', 'low', 'pre_close',

@@ -35,6 +35,7 @@ from src.data.stock_index_loader import get_index_stock_name
 from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name, lookup_static_stock_name
 from src.services.market_symbol_utils import is_suffix_market_symbol
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
+from src import intelligent_fallback as ifb
 from src.provider_health_monitor import observe_call
 from src.services.stock_list_parser import AnalysisTarget, ParseStatus, parse_analysis_target
 from .fundamental_adapter import AkshareFundamentalAdapter
@@ -545,6 +546,9 @@ class BaseFetcher(ABC):
             
             # Step 4: 计算技术指标
             df = self._calculate_indicators(df)
+            if ifb.strict_history(stock_code) and ifb.HISTORY.get(self.name) == "QFQ":
+                ifb.mark_history(df, self.name, raw_df.attrs.get("dsa_route"))
+                ifb.validate_history(df, self.name, start_date=start_date, end_date=end_date)
 
             elapsed = time.time() - request_start
             logger.info(
@@ -2048,6 +2052,9 @@ class DataFetcherManager:
         if market != "cn":
             fetchers = self._filter_daily_fetchers_for_market(fetchers, market)
         fetchers = self._filter_fetchers_by_capability(fetchers, capability="daily_data")
+        strict_qfq = market == "cn" and ifb.strict_history(stock_code)
+        if strict_qfq:
+            fetchers = ifb.history_order(fetchers)
         total_fetchers = len(fetchers)
 
         if total_fetchers == 0:
@@ -2197,6 +2204,8 @@ class DataFetcherManager:
                     end_date=end_date,
                     days=days
                 )
+                if strict_qfq and df is not None and not df.empty:
+                    ifb.validate_history(df, fetcher.name, start_date=start_date, end_date=end_date)
                 
                 if df is not None and not df.empty:
                     duration_ms = int((time.time() - attempt_start) * 1000)
@@ -2485,6 +2494,8 @@ class DataFetcherManager:
         if quote is None:
             return None
 
+        if ifb.strict_history(getattr(quote, "code", "")):
+            ifb.quote_lineage(quote)
         fetched_at = self._utc_now_iso()
         setattr(quote, "fetched_at", fetched_at)
         if fallback_from:
@@ -2696,6 +2707,9 @@ class DataFetcherManager:
             if source.strip()
         ]
         
+        strict_quote = ifb.strict_history(stock_code)
+        if strict_quote:
+            source_priority = ifb.quote_order(source_priority)
         errors = []
         failed_sources: List[str] = []
         # primary_quote holds the first successful result; we may supplement
@@ -2704,6 +2718,10 @@ class DataFetcherManager:
         primary_fallback_from: Optional[str] = None
         
         for source_index, source in enumerate(source_priority):
+            if strict_quote and primary_quote is not None and (source == "akshare_xq" or supplement_attempts >= 1):
+                break
+            if strict_quote and primary_quote is not None:
+                supplement_attempts += 1
             attempt_start = time.time()
             fallback_to = source_priority[source_index + 1] if source_index + 1 < len(source_priority) else None
             fetcher = None
@@ -2715,7 +2733,7 @@ class DataFetcherManager:
                     if fetcher is not None and hasattr(fetcher, 'get_realtime_quote'):
                         record_provider_run_started(
                             data_type="realtime_quote",
-                            provider=fetcher.name,
+                            provider=source if strict_quote else fetcher.name,
                             operation="get_realtime_quote",
                         )
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code)
@@ -2725,7 +2743,7 @@ class DataFetcherManager:
                     if fetcher is not None and hasattr(fetcher, 'get_realtime_quote'):
                         record_provider_run_started(
                             data_type="realtime_quote",
-                            provider=fetcher.name,
+                            provider=source if strict_quote else fetcher.name,
                             operation="get_realtime_quote",
                         )
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, source="em")
@@ -2735,7 +2753,7 @@ class DataFetcherManager:
                     if fetcher is not None and hasattr(fetcher, 'get_realtime_quote'):
                         record_provider_run_started(
                             data_type="realtime_quote",
-                            provider=fetcher.name,
+                            provider=source if strict_quote else fetcher.name,
                             operation="get_realtime_quote",
                         )
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, source="sina")
@@ -2745,17 +2763,23 @@ class DataFetcherManager:
                     if fetcher is not None and hasattr(fetcher, 'get_realtime_quote'):
                         record_provider_run_started(
                             data_type="realtime_quote",
-                            provider=fetcher.name,
+                            provider=source if strict_quote else fetcher.name,
                             operation="get_realtime_quote",
                         )
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, source="tencent")
                 
+                elif source == "akshare_xq" and strict_quote:
+                    fetcher = self._get_fetcher_by_name("AkshareFetcher", capability="realtime_quote")
+                    if fetcher is not None:
+                        record_provider_run_started(data_type="realtime_quote", provider=source, operation="get_realtime_quote")
+                        quote = self._call_fetcher_method(fetcher, "get_realtime_quote", stock_code, source="xq")
+
                 elif source == "tushare":
                     fetcher = self._get_fetcher_by_name("TushareFetcher", capability="realtime_quote")
                     if fetcher is not None and hasattr(fetcher, 'get_realtime_quote'):
                         record_provider_run_started(
                             data_type="realtime_quote",
-                            provider=fetcher.name,
+                            provider=source if strict_quote else fetcher.name,
                             operation="get_realtime_quote",
                         )
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', raw_stock_code or stock_code)
@@ -2766,15 +2790,19 @@ class DataFetcherManager:
                     if fetcher is not None and hasattr(fetcher, 'get_realtime_quote'):
                         record_provider_run_started(
                             data_type="realtime_quote",
-                            provider=fetcher.name,
+                            provider=source if strict_quote else fetcher.name,
                             operation="get_realtime_quote",
                         )
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', raw_stock_code or stock_code)
 
-                provider_name = fetcher.name if fetcher is not None else source
+                provider_name = source if strict_quote else (fetcher.name if fetcher is not None else source)
                 if analysis_target is not None and quote is not None and not self._quote_matches_target(quote, analysis_target):
                     raise ValueError("Realtime provider returned another target")
                 
+                if strict_quote and quote is not None:
+                    if normalize_stock_code(quote.code) != stock_code or not ifb.valid_quote_value("price", quote.price):
+                        raise ValueError("Invalid quote identity or price")
+                    ifb.quote_lineage(quote)
                 if quote is not None and quote.has_basic_data():
                     record_provider_run(
                         data_type="realtime_quote",
@@ -2805,13 +2833,14 @@ class DataFetcherManager:
                         supplement_attempts = 0
                     else:
                         # Supplement missing fields from this source (limit attempts)
-                        supplement_attempts += 1
+                        if not strict_quote:
+                            supplement_attempts += 1
                         if supplement_attempts > 1:
                             logger.debug(
                                 f"[realtime quote] {stock_code} supplement attempt limit reached, stopping"
                             )
                             break
-                        merged = self._merge_quote_fields(primary_quote, quote)
+                        merged = ifb.merge_fields(primary_quote, quote, self._SUPPLEMENT_FIELDS) if strict_quote else self._merge_quote_fields(primary_quote, quote)
                         if merged:
                             logger.info(
                                 f"[realtime quote] {stock_code} supplemented missing fields from {source}: {merged}"
@@ -2839,7 +2868,7 @@ class DataFetcherManager:
                 error_type, error_reason = summarize_exception(e)
                 record_provider_run(
                     data_type="realtime_quote",
-                    provider=getattr(fetcher, "name", source),
+                    provider=source if strict_quote else getattr(fetcher, "name", source),
                     operation="get_realtime_quote",
                     success=False,
                     latency_ms=int((time.time() - attempt_start) * 1000),
@@ -4191,6 +4220,8 @@ class DataFetcherManager:
             "total_mv": getattr(quote_payload, "total_mv", None) if quote_payload else None,
             "circ_mv": getattr(quote_payload, "circ_mv", None) if quote_payload else None,
         }
+        if ifb.strict_history(stock_code):
+            valuation_payload = {k: v if ifb.valid_quote_value(k, v) else None for k,v in valuation_payload.items()}
         valuation_status = self._infer_block_status(
             valuation_payload,
             "partial" if quote_payload is not None else "not_supported",
@@ -4574,6 +4605,9 @@ class DataFetcherManager:
             ),
             [valuation_err] if valuation_err else [],
         )
+
+        if ifb.strict_history(stock_code) and quote_payload is not None:
+            result_ctx["valuation"]["field_sources"] = {k: v for k,v in ifb.quote_lineage(quote_payload).items() if k in valuation_payload and valuation_payload[k] is not None}
 
         # growth / earnings / institution (one AkShare call)
         if remaining_seconds <= 0:

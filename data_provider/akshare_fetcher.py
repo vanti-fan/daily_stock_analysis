@@ -618,6 +618,7 @@ class AkshareFetcher(BaseFetcher):
 
                 if df is not None and not df.empty:
                     logger.info(f"[Data Source] {source_name} succeeded")
+                    df.attrs["dsa_route"] = {"东方财富":"eastmoney","新浪财经":"sina","腾讯财经":"tencent"}[source_name]
                     return df
             except Exception as e:
                 last_error = e
@@ -1135,6 +1136,22 @@ class AkshareFetcher(BaseFetcher):
                 return self._get_stock_realtime_quote_sina(stock_code)
             elif source == "tencent":
                 return self._get_stock_realtime_quote_tencent(stock_code)
+            elif source == "xq":
+                from src.intelligent_fallback import strict_history, parse_xueqiu
+                if not strict_history(stock_code):
+                    return None
+                import akshare as ak
+                try:
+                    frame = _akshare_call_with_timeout(ak.stock_individual_spot_xq, symbol=_to_sina_tx_symbol(stock_code).upper(), timeout=self._history_call_timeout, call_name="ak.stock_individual_spot_xq")
+                    quote = parse_xueqiu(frame, stock_code)
+                    if quote is not None:
+                        circuit_breaker.record_success(source_key)
+                    else:
+                        circuit_breaker.record_failure(source_key, "empty Xueqiu quote")
+                    return quote
+                except Exception as exc:
+                    circuit_breaker.record_failure(source_key, type(exc).__name__)
+                    raise
             else:
                 return self._get_stock_realtime_quote_em(stock_code)
     

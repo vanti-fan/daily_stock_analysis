@@ -586,7 +586,9 @@ class StockAnalysisPipeline:
             )
 
             # 断点续传检查：如果最新可复用交易日的数据已存在，则跳过
-            if not force_refresh and self.db.has_today_data(code, target_date):
+            from src.intelligent_fallback import strict_history
+            strict_qfq = strict_history(code)
+            if not strict_qfq and not force_refresh and self.db.has_today_data(code, target_date):
                 logger.info(
                     f"{stock_name}({code}) {target_date} data already exists, skipping fetch (resume)"
                 )
@@ -596,10 +598,16 @@ class StockAnalysisPipeline:
             if _is_current_stock_cancelled():
                 return False, "股票分析已取消"
             logger.info(f"{stock_name}({code}) fetching data from data sources...")
+            history_kwargs = {}
+            if strict_qfq:
+                old_bars = self.db.get_data_range(code, date(1990, 1, 1), target_date)
+                if old_bars:
+                    history_kwargs["start_date"] = min(row.date for row in old_bars).strftime("%Y-%m-%d")
             df, source_name = self.fetcher_manager.get_daily_data(
                 code,
                 end_date=target_date.strftime("%Y-%m-%d"),
                 days=30,
+                **history_kwargs,
             )
 
             if df is None or df.empty:

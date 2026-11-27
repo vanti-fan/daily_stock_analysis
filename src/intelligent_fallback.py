@@ -38,7 +38,7 @@ def ranked(items,key,groups,category):
         try:
             from src.provider_health_monitor import build_report
             for r in build_report(path)["providers"]:
-                if r["category"]==category and r["completed"]>=3 and r["success_rate"] is not None:
+                if r["category"]==category and r["operation"]=="get_"+category and r["completed"]>=3 and r["success_rate"] is not None:
                     evidence[r["provider"]]=r
         except (OSError,ValueError,KeyError,TypeError):
             pass
@@ -58,20 +58,21 @@ def ranked(items,key,groups,category):
         else:
             first.append(item)
             if group and group!="MULTI": seen.add(group)
-    return first+deferred
+    return sorted(first+deferred,key=rank)
 
 def quote_order(routes):
     out=[]
     for route in routes:
         route="tencent" if route=="akshare_qq" else route
         if route not in out: out.append(route)
-    return ranked(out,lambda x:x,GROUPS,"realtime_quote")
+    # New Xueqiu route is opt-in and only considered after existing routes fail.
+    return ranked([x for x in out if x!="akshare_xq"],lambda x:x,GROUPS,"realtime_quote") + (["akshare_xq"] if "akshare_xq" in out else [])
 
 def mark_history(df,provider,route=None):
     df.attrs["dsa_history"]={"provider":provider,"route":route or provider,
         "adjustment":"QFQ","evidence":"REVIEWED_REQUEST_CONTRACT",
         "anchor":"PROVIDER_CURRENT_BASE_UNVERIFIED",
-        "volume_unit":"shares","currency":"CNY"}
+        "currency":"CNY"}
     return df
 
 def validate_history(df,provider,*,start_date=None,end_date=None):
@@ -143,3 +144,44 @@ def valid_quote_value(field,value):
         n=float(value)
         return math.isfinite(n) and (field=="pe_ratio" or n>=0)
     except (ValueError,TypeError): return False
+
+
+def strict_history(code):
+    return enabled() and ordinary_a_share(code)
+
+def merge_fields(primary,secondary,fields):
+    if not compatible_quotes(primary,secondary): return []
+    a,b=quote_lineage(primary),quote_lineage(secondary)
+    filled=[]
+    for field in fields:
+        value=getattr(secondary,field,None)
+        if not valid_quote_value(field,getattr(primary,field,None)) and valid_quote_value(field,value):
+            setattr(primary,field,value)
+            a[field]=dict(b[field])
+            filled.append(field)
+    return filled
+
+def parse_xueqiu(frame,code):
+    """AKShare item/value contract; avoid timezone and valuation assumptions."""
+    from data_provider.realtime_types import UnifiedRealtimeQuote,RealtimeSource
+    if frame is None or frame.empty or not {"item","value"}.issubset(frame.columns):
+        return None
+    if frame["item"].duplicated().any(): return None
+    row=dict(zip(frame["item"],frame["value"]))
+    symbol=("SH" if code.startswith("6") else "SZ")+code
+    if str(row.get("代码","")).upper()!=symbol: return None
+    if str(row.get("货币","")).upper() not in ("CNY","人民币"): return None
+    def number(label, signed=False):
+        try:
+            v=float(row[label])
+            return v if math.isfinite(v) and (signed or v>=0) else None
+        except (KeyError,ValueError,TypeError): return None
+    price=number("现价")
+    if not price: return None
+    # Upstream converts epoch to host-local naive string. Do not assume zone.
+    return UnifiedRealtimeQuote(code=code,name=str(row.get("名称") or ""),source=RealtimeSource.XUEQIU,
+        market="cn",currency="CNY",price=price,change_pct=number("涨幅",True),
+        open_price=number("今开"),high=number("最高"),low=number("最低"),pre_close=number("昨收"),
+        pe_ratio=number("市盈率(动)",True),pb_ratio=number("市净率"),
+        total_mv=number("资产净值/总市值"),circ_mv=number("流通值"),
+        turnover_rate=number("周转率"),amplitude=number("振幅"))
