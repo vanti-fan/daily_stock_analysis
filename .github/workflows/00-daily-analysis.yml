@@ -101,6 +101,7 @@ jobs:
       
       - name: 执行股票分析
         env:
+          DSA_NEWS_SOURCE_QUALITY: ${{ github.ref == 'refs/heads/feature/telegram-dashboard-v1' && (vars.DSA_NEWS_SOURCE_QUALITY || 'true') || 'false' }}
           DSA_CHIP_DATA_QUALITY: ${{ github.ref == 'refs/heads/feature/telegram-dashboard-v1' && (vars.DSA_CHIP_DATA_QUALITY || 'true') || 'false' }}
           DSA_CHIP_TUSHARE_FALLBACK: ${{ github.ref == 'refs/heads/feature/telegram-dashboard-v1' && (vars.DSA_CHIP_TUSHARE_FALLBACK || 'false') || 'false' }}
           DSA_MARKET_DATA_QUALITY: ${{ github.ref == 'refs/heads/feature/telegram-dashboard-v1' && (vars.DSA_MARKET_DATA_QUALITY || 'true') || 'false' }}
