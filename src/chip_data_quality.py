@@ -50,6 +50,7 @@ def ordered_candidates(fetchers):
     from src.intelligent_fallback import ranked
     allowed=[f for f in fetchers if f.name in SOURCES and
              (f.name!="TushareFetcher" or tushare_enabled())]
+    allowed.sort(key=lambda f: f.name!="AkshareFetcher")
     return ranked(allowed,lambda f:f.name,
                   {"AkshareFetcher":"eastmoney","TushareFetcher":"tushare"},"chip")
 
@@ -135,3 +136,19 @@ def audit():
                 {"provider":"efinance/pytdx/xueqiu","policy":"no_reviewed_chip_endpoint"}],
             "local_estimate":"not_implemented; no validated turnover-adjusted history model",
             "limitations":["No true investor cost records","Provider-specific algorithms may differ","Unadjusted request does not establish independent price-basis proof","No live quota check"]}
+
+def enforce_report(result, chip):
+    """Replace objective chip values rather than accepting LLM substitutes."""
+    if not result: return
+    if not isinstance(result.dashboard,dict): result.dashboard={}
+    dp=result.dashboard.get("data_perspective")
+    if not isinstance(dp,dict): dp={}; result.dashboard["data_perspective"]=dp
+    if chip is None or snapshot_error(chip,read(chip,"code"),read(chip,"date")):
+        dp["chip_structure"]={}
+        dp["chip_unavailable_reason"]="未取得符合质量要求的筹码数据"
+        return
+    dp.pop("chip_unavailable_reason",None)
+    dp["chip_structure"]={"profit_ratio":f"{read(chip,'profit_ratio'):.1%}",
+        "avg_cost":read(chip,"avg_cost"),"concentration":f"{read(chip,'concentration_90'):.2%}",
+        "chip_health":"模型估算，仅供参考","source":read(chip,"source"),"trade_date":read(chip,"date"),
+        "data_kind":read(chip,"data_kind"),"price_basis":read(chip,"price_basis")}
