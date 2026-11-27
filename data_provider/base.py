@@ -3462,6 +3462,20 @@ class DataFetcherManager:
         logger.info(f"[stock name] batch fetch completed, succeeded {len(result)}/{len(stock_codes)}")
         return result
 
+    def get_market_limit_pools(self, trade_date):
+        for f in self._get_fetchers_snapshot():
+            method = getattr(f, "get_market_limit_pools", None)
+            if not callable(method):
+                continue
+            try:
+                result = observe_call("market_limit_pools", f.name, "get_market_limit_pools",
+                                      lambda: method(trade_date))
+                if result:
+                    return result
+            except Exception:
+                continue
+        return {}
+
     def get_main_indices(self, region: str = "cn") -> List[Dict[str, Any]]:
         """获取主要指数实时行情（自动切换数据源）"""
         from src.market_data_quality import enabled, quality_route, index_rows, INDEX_NAMES
