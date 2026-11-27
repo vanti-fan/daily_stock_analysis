@@ -3,6 +3,11 @@ name: Telegram Connection Test
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feature/telegram-dashboard-v1
+    paths:
+      - '.github/workflows/telegram-test.yml'
 
 permissions:
   contents: read
