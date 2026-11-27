@@ -96,6 +96,14 @@ jobs:
           assert write_index(root) == 3
           PY
 
+      - name: Run Phase 2.4.4 offline market data tests
+        run: |
+          mkdir -p image-test/phase244
+          set -o pipefail
+          python -m compileall -q src/market_data_quality.py src/market_analyzer.py data_provider/base.py data_provider/akshare_fetcher.py data_provider/efinance_fetcher.py data_provider/tushare_fetcher.py data_provider/tickflow_fetcher.py src/financial_dashboard.py src/data_quality_manager.py
+          python -m unittest discover -s tests -p test_market_data_quality.py -v 2>&1 | tee image-test/phase244/test-results.txt
+          PYTHONPATH=tests:. python -c "from test_market_data_quality import render_fixture; render_fixture('image-test/phase244')"
+
       - name: Run Phase 2.4.3 offline routing and adjustment tests
         run: |
           mkdir -p image-test/phase243

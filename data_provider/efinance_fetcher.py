@@ -1184,6 +1184,8 @@ class EfinanceFetcher(BaseFetcher):
         df: pd.DataFrame,
         ) -> Optional[Dict[str, Any]]:
         """从行情 DataFrame 计算涨跌统计。"""
+        from src.market_data_quality import enabled, breadth_from_frame
+        if enabled(): return breadth_from_frame(df,"efinance")
         import numpy as np
 
         df = df.copy()
@@ -1310,6 +1312,8 @@ class EfinanceFetcher(BaseFetcher):
 
             change_col = '涨跌幅' if '涨跌幅' in df.columns else 'pct_chg'
             name_col = '股票名称' if '股票名称' in df.columns else 'name'
+            from src.market_data_quality import enabled, rank_frame
+            if enabled(): return rank_frame(df,name_col,change_col,n,"efinance_industry","industry")
             if change_col not in df.columns or name_col not in df.columns:
                 return None
 

@@ -1076,6 +1076,10 @@ class TickFlowFetcher(BaseFetcher):
             logger.warning("[TickFlowFetcher] empty market stats quotes")
             return None
 
+        from src.market_data_quality import enabled, breadth_from_frame
+        if enabled():
+            import pandas as pd
+            return breadth_from_frame(pd.DataFrame(quotes),"tickflow_universe")
         stats = {
             "up_count": 0,
             "down_count": 0,

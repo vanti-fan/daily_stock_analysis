@@ -484,6 +484,13 @@ def stock_pages(notifier, rows, results, report):
         body += section("市场快照",grid(snapshot or [("行情","未提供","neutral")]))
         body += section("技术参考",grid(technical or [("技术数据","未提供","neutral")]))
         body += '<div class="notice">数据源：'+e((q.get("groups",{}).get("snapshot",{}).get("price",{}).get("source") if quality_mode else p.data_source) or "未注明")+' · 完整数据限制见原始报告。</div>'
+        if quality_mode and q.get("boards"):
+            records=[[b.get("name"),b.get("type") or "未分类",b.get("source") or "未注明"] for b in q["boards"][:8]]
+            # Separate page prevents the main snapshot exceeding mobile bounds.
+            board_key=re.sub(r"[^A-Za-z0-9._-]","_",code)
+            pages.append(("stock-"+board_key+"-boards",page(p.title+" "+code,stamp,
+                         section("供应商板块归属",table(["板块","类别","来源"],records))+
+                         '<div class="notice">仅为归档的供应商分类，未跨供应商匹配；非AI推断。</div>',"STOCK / SECTORS")))
         key = re.sub(r"[^A-Za-z0-9._-]", "_", code)
         title = p.title+" "+code
         pages.append(("stock-"+key+"-01",page(title,stamp,body,"STOCK / SNAPSHOT")))
@@ -527,6 +534,8 @@ def is_market_report(content, payload=None):
 
 
 def market_pages(content, payload=None):
+    if isinstance(payload,dict) and payload.get("market_data_quality_version")=="2.4.4":
+        return structured_market_pages(content,payload)
     p = (_market_data_from_payload(payload, content, date.today()) if isinstance(payload, dict)
          else _market_data(content, date.today()))
     stamp = p.report_date or _extract_date(content,date.today())
@@ -722,3 +731,50 @@ def notify_status_only(notifier, rows):
     return send_batch(notifier, rows, [], "") if all(
         r["status"] != "SUCCESS" for r in rows
     ) else bool(notifier.send_to_telegram(status_text(rows)))
+
+
+def structured_market_pages(content,payload):
+    """Objective cards consume only the validated structured provider payload."""
+    from src.market_data_quality import number
+    stamp=payload.get("date") or str(date.today())
+    def fmt(v,d=2,suffix=""):
+        n=number(v)
+        return f"{n:,.{d}f}{suffix}" if n is not None else MISSING
+    def pct(v):
+        n=number(v)
+        return f"{n:+.2f}%" if n is not None else MISSING
+    def asof(r):
+        return r.get("trade_date") or "日期未核实"
+    idx=payload.get("indices") or []
+    records=[[r.get("name"),fmt(r.get("current")),pct(r.get("change_pct")),asof(r)] for r in idx]
+    body=section("主要指数",table(["指数","点位","涨跌幅","交易日"],records,lambda i,v:change_class(v) if i==2 else ""))
+    body+=section("指数覆盖率",grid([("已取得",f"{len(idx)}/6",""),("数据来源",idx[0].get("source") if idx else MISSING,"")]))
+    body+='<div class="notice">单一供应商快照；不跨日期或分类拼接。报告日期不等于行情交易日。</div>'
+    pages=[("market-01",page("A股主要指数",stamp,body,"MARKET / OVERVIEW"))]
+    b=payload.get("breadth") or {}
+    vals=[(label,fmt(b.get(key),0),"") for key,label in (("up_count","上涨"),("down_count","下跌"),("flat_count","平盘"),("limit_up_count","涨停"),("limit_down_count","跌停"))]
+    counts=[number(b.get(k)) for k in ("up_count","down_count","flat_count")]
+    total=sum(counts) if all(n is not None for n in counts) else 0
+    vals.append(("上涨占比",fmt(100*counts[0]/total,1,"%") if total>0 else MISSING,""))
+    body=section("供应商样本涨跌分布",grid(vals))
+    if total>0:
+        body+='<div class="bar" style="display:flex;height:24px">'+''.join(
+             '<i style="background:'+color+';width:'+str(100*n/total)+'%"></i>' for n,color in zip(counts,("#c72f3a","#087a58","#9daab7")))+'</div>'
+    body+=section("成交额与覆盖",grid([("样本成交额(亿元)",fmt(b.get("total_amount"),0),""),("较前日",pct(b.get("turnover_change_pct")),""),("有效样本",fmt(b.get("valid_count"),0),""),("返回股票数",fmt(b.get("universe_count"),0),""),("零成交额样本",fmt(b.get("zero_amount_count"),0),"")]))
+    body+=section("质量与来源","<p>"+e(b.get("status") or "UNAVAILABLE")+" · "+e(b.get("provider") or MISSING)+" · "+e(asof(b))+"</p><p>全市场覆盖未独立核实；涨跌停仅采用供应商明确限价，不使用板块规则推测。</p>")
+    pages.append(("market-breadth",page("市场宽度与成交额",stamp,body,"MARKET / BREADTH")))
+    for key,label in (("sectors","行业"),("concepts","概念")):
+        group=payload.get(key) or {}
+        for direction,title in (("top","涨幅排名"),("bottom","跌幅排名")):
+            rows=group.get(direction) or []
+            records=[[r.get("name"),pct(r.get("change_pct")),fmt(number(r.get("amount"))/1e8,2) if number(r.get("amount")) is not None else MISSING] for r in rows[:5]]
+            body=section(label+title,table(["板块","涨跌幅","成交额(亿)"],records,lambda i,v:change_class(v) if i==1 else "") if records else "<p>未取得有效数据</p>")
+            if rows: body+=section("分类与来源","<p>"+e(rows[0].get("classification"))+" · "+e(asof(rows[0]))+"</p>")
+            body+='<div class="notice">仅对该供应商分类的有效返回结果排名；不同分类体系不合并。</div>'
+            pages.append(("market-"+key+"-"+direction,page(label+"板块"+title,stamp,body,"MARKET / SECTORS")))
+    # Model narrative remains separate, never reparsed for market figures.
+    p=_market_data_from_payload(payload,content,date.today())
+    body=section("AI研究观点",bullets(p.plan+p.focus+p.avoid,90))
+    body+=section("风险与数据边界",bullets(p.risks,100))
+    pages.append(("market-03",page("市场观察与风险",stamp,body,"MARKET / OUTLOOK")))
+    return pages

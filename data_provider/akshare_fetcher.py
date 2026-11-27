@@ -2028,7 +2028,9 @@ class AkshareFetcher(BaseFetcher):
             self._enforce_rate_limit()
 
             # 使用 akshare 获取指数行情（新浪财经接口）
-            df = ak.stock_zh_index_spot_sina()
+            from src.market_data_quality import enabled
+            df = (_akshare_call_with_timeout(ak.stock_zh_index_spot_sina,timeout=self._market_stats_call_timeout,
+                   call_name="ak.stock_zh_index_spot_sina") if enabled() else ak.stock_zh_index_spot_sina())
 
             results = []
             if df is not None and not df.empty:
@@ -2052,6 +2054,7 @@ class AkshareFetcher(BaseFetcher):
                             amplitude = (high - low) / prev_close * 100
 
                         results.append({
+                            **({"source":"akshare_sina_index"} if enabled() else {}),
                             'code': code,
                             'name': name,
                             'current': current,
@@ -2083,6 +2086,7 @@ class AkshareFetcher(BaseFetcher):
         """
         import akshare as ak
 
+        partial_stats = None
         # 优先东财接口
         try:
             self._set_random_user_agent()
@@ -2105,7 +2109,19 @@ class AkshareFetcher(BaseFetcher):
                 elapsed,
             )
             if df is not None and not df.empty:
-                return self._calc_market_stats(df)
+                from src.market_data_quality import enabled, breadth_from_frame
+                if enabled():
+                    stats=breadth_from_frame(df,"akshare_em")
+                    if stats and stats.get("breadth_usable"): return stats
+                    partial_stats = stats
+                else:
+                    from src.market_data_quality import enabled, breadth_from_frame
+                if enabled():
+                    stats=breadth_from_frame(df,"akshare_sina")
+                    if stats and stats.get("breadth_usable"): return stats
+                    return stats or partial_stats
+                else:
+                    return self._calc_market_stats(df)
             logger.warning(
                 "[MarketStats] component=market_stats provider=AkshareFetcher "
                 "api=ak.stock_zh_a_spot_em action=parse status=empty"
@@ -2169,7 +2185,7 @@ class AkshareFetcher(BaseFetcher):
                 e,
             )
 
-        return None
+        return partial_stats
 
     def _calc_market_stats(
         self,
@@ -2270,6 +2286,8 @@ class AkshareFetcher(BaseFetcher):
         """
         import akshare as ak
 
+        partial_rank=None
+        from src.market_data_quality import enabled, rank_frame
         def _get_rank_top_n(df: pd.DataFrame, change_col: str, industry_name: str, n: int) -> Tuple[list, list]:
             df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
             df = df.dropna(subset=[change_col])
@@ -2294,11 +2312,17 @@ class AkshareFetcher(BaseFetcher):
             self._enforce_rate_limit()
 
             logger.info("[API Call] ak.stock_board_industry_name_em() fetching sector rankings...")
-            df = ak.stock_board_industry_name_em()
+            from src.market_data_quality import enabled, rank_frame
+            df = (_akshare_call_with_timeout(ak.stock_board_industry_name_em,timeout=self._market_stats_call_timeout,
+                    call_name="ak.stock_board_industry_name_em") if enabled() else ak.stock_board_industry_name_em())
             if df is not None and not df.empty:
                 change_col = '涨跌幅'
                 name = '板块名称'
-                return _get_rank_top_n(df, change_col, name, n)
+                if enabled():
+                    result=rank_frame(df,name,change_col,n,"akshare_em_industry","industry")
+                    if result and all(len(side)>=n for side in result): return result
+                    partial_rank=result
+                else: return _get_rank_top_n(df, change_col, name, n)
             
         except Exception as e:
             logger.warning(f"[Akshare] Eastmoney sector rankings failed: {e}, trying Sina")
@@ -2309,20 +2333,40 @@ class AkshareFetcher(BaseFetcher):
             self._enforce_rate_limit()
 
             logger.info("[API Call] ak.stock_sector_spot() fetching sector rankings (Sina)...")
-            df = ak.stock_sector_spot(indicator='行业')
+            df = (_akshare_call_with_timeout(ak.stock_sector_spot,timeout=self._market_stats_call_timeout,
+                    call_name="ak.stock_sector_spot",indicator="行业") if enabled() else ak.stock_sector_spot(indicator='行业'))
             if df is None or df.empty:
                 return None
             change_col = '涨跌幅'
             name = '板块'
+            if enabled():
+                result=rank_frame(df,name,change_col,n,"akshare_sina_industry","industry")
+                return max((r for r in (result,partial_rank) if r),key=lambda r:sum(map(len,r)),default=None)
             return _get_rank_top_n(df, change_col, name, n)
         
         except Exception as e:
             logger.error(f"[Akshare] Sina sector rankings also failed: {e}")
-            return None
+            return partial_rank
 
     def get_concept_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
         """获取概念/题材涨跌榜。"""
         import akshare as ak
+        from src.market_data_quality import enabled, rank_frame
+        if enabled():
+            best=None
+            for fn,kwargs,name,source in (
+                (ak.stock_board_concept_name_em,{},"板块名称","akshare_em_concept"),
+                (ak.stock_sector_spot,{"indicator":"概念"},"板块","akshare_sina_concept")):
+                try:
+                    self._set_random_user_agent()
+                    self._enforce_rate_limit()
+                    df=_akshare_call_with_timeout(fn,timeout=self._market_stats_call_timeout,call_name=source,**kwargs)
+                    result=rank_frame(df,name,"涨跌幅",n,source,"concept")
+                    if result and all(len(side)>=n for side in result): return result
+                    if result and (best is None or sum(map(len,result))>sum(map(len,best))): best=result
+                except Exception as exc:
+                    logger.warning("Concept provider %s failed (%s)",source,type(exc).__name__)
+            return best
 
         try:
             self._set_random_user_agent()

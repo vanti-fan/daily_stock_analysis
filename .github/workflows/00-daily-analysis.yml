@@ -101,6 +101,7 @@ jobs:
       
       - name: 执行股票分析
         env:
+          DSA_MARKET_DATA_QUALITY: ${{ github.ref == 'refs/heads/feature/telegram-dashboard-v1' && (vars.DSA_MARKET_DATA_QUALITY || 'true') || 'false' }}
           DSA_INTELLIGENT_FALLBACK: ${{ github.ref == 'refs/heads/feature/telegram-dashboard-v1' && (vars.DSA_INTELLIGENT_FALLBACK || 'true') || 'false' }}
           DSA_PROVIDER_HEALTH_JOURNAL: ${{ github.ref == 'refs/heads/feature/telegram-dashboard-v1' && format('reports/provider-health-{0}-{1}.jsonl', github.run_id, github.run_attempt) || '' }}
           # ==========================================

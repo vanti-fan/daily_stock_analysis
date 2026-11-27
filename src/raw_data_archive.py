@@ -40,7 +40,7 @@ FUNDAMENTAL_KEYS = ("code", "status", "coverage", "source_chain", "fundamental",
                     "valuation", "financial", "belong_boards", "capital_flow", "lhb",
                     "corporate_events", "growth", "earnings", "institution", "dragon_tiger", "boards", "errors")
 MARKET_KEYS = ("region", "date", "generated_at", "indices", "breadth", "sectors",
-               "concepts", "market_light", "market_scope")
+               "concepts", "market_light", "market_scope", "market_data_quality_version", "index_coverage")
 RESEARCH_KEYS = ("code", "success", "sentiment_score", "trend_prediction",
                  "operation_advice", "confidence_level", "model_used", "query_id",
                  "analysis_summary", "trend_analysis", "technical_analysis",

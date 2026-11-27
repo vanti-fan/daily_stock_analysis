@@ -3315,6 +3315,9 @@ class DataFetcherManager:
                         latency_ms=int((time.time() - start) * 1000),
                         record_count=len(boards),
                     )
+                    from src.market_data_quality import enabled
+                    if enabled():
+                        boards=[dict(b,source=fetcher.name) for b in boards]
                     logger.info(f"[{fetcher.name}] fetched belong boards: {stock_code}, count={len(boards)}")
                     return boards
                 record_provider_run(
@@ -3461,6 +3464,14 @@ class DataFetcherManager:
 
     def get_main_indices(self, region: str = "cn") -> List[Dict[str, Any]]:
         """获取主要指数实时行情（自动切换数据源）"""
+        from src.market_data_quality import enabled, quality_route, index_rows, INDEX_NAMES
+        if region == "cn" and enabled():
+            candidates = [f for f in self._get_fetchers_snapshot()
+                          if type(f).get_main_indices is not BaseFetcher.get_main_indices]
+            return quality_route(candidates,"market_indices","get_main_indices",
+                lambda f:f.get_main_indices(region=region),index_rows,
+                lambda rows:len(rows)==len(INDEX_NAMES) and all(r["date_status"]=="CURRENT_DATE" for r in rows),
+                lambda rows:(sum(r["date_status"]=="CURRENT_DATE" for r in rows),len(rows))) or []
         if region == "cn":
             tickflow_fetcher = self._get_tickflow_fetcher()
             if tickflow_fetcher is not None:
@@ -3494,6 +3505,15 @@ class DataFetcherManager:
     ) -> Dict[str, Any]:
         """获取市场涨跌统计（自动切换数据源）"""
         logger.info("[MarketStats] component=market_stats action=start purpose=%s", purpose)
+        from src.market_data_quality import enabled, quality_route, normalize_stats
+        if enabled():
+            candidates = [f for f in self._get_fetchers_snapshot()
+                          if type(f).get_market_stats is not BaseFetcher.get_market_stats]
+            data = quality_route(candidates,"market_stats","get_market_stats",
+                lambda f:f.get_market_stats(allow_cache=allow_cache),normalize_stats,
+                lambda d:d.get("breadth_usable") and d.get("total_amount") is not None and d.get("date_status")=="CURRENT_DATE",
+                lambda d:(bool(d.get("breadth_usable")),d.get("date_status")=="CURRENT_DATE",d.get("total_amount") is not None,d.get("valid_count") or 0))
+            return data or {}
         stats_kwargs = {} if allow_cache else {"allow_cache": False}
         tickflow_fetcher = self._get_tickflow_fetcher()
         if tickflow_fetcher is not None:
@@ -5129,6 +5149,12 @@ class DataFetcherManager:
 
     def get_sector_rankings(self, n: int = 5) -> Tuple[List[Dict], List[Dict]]:
         """获取板块涨跌榜（自动切换数据源）"""
+        from src.market_data_quality import enabled, quality_route, ranking_rows
+        if enabled():
+            candidates=[f for f in self._get_fetchers_snapshot() if type(f).get_sector_rankings is not BaseFetcher.get_sector_rankings]
+            return quality_route(candidates,"sector_rankings","get_sector_rankings",
+                lambda f:f.get_sector_rankings(n),lambda d,p:ranking_rows(d,p,"industry",n),
+                lambda d:all(len(s)>=n for s in d),lambda d:sum(map(len,d))) or ([],[])
         # 按需求固定回退顺序：Akshare(EM) -> Akshare(Sina) -> Tushare -> Efinance
         top, bottom, source_chain, last_error = self._get_sector_rankings_with_meta(n)
         if top or bottom:
@@ -5162,6 +5188,12 @@ class DataFetcherManager:
         if normalized_n <= 0:
             normalized_n = 5
 
+        from src.market_data_quality import enabled, quality_route, ranking_rows
+        if enabled():
+            candidates=[f for f in self._get_fetchers_snapshot() if type(f).get_concept_rankings is not BaseFetcher.get_concept_rankings]
+            return quality_route(candidates,"concept_rankings","get_concept_rankings",
+                lambda f:f.get_concept_rankings(normalized_n),lambda d,p:ranking_rows(d,p,"concept",normalized_n),
+                lambda d:all(len(s)>=normalized_n for s in d),lambda d:sum(map(len,d))) or ([],[])
         last_error = ""
         now = time.monotonic()
 

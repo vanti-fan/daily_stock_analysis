@@ -1,0 +1,8 @@
+# Phase 2.4.4 — Market Breadth & Sector Data
+Baseline: 6de94bfb9dab8bcbe3eea46df5797e1cfa41872d. Feature gate DSA_MARKET_DATA_QUALITY (development branch default true).
+
+- Validate six canonical indices; prefer complete same-date provider response, retain best partial, never splice providers. Index timestamps absent on some live APIs are unverified.
+- Normalize existing Eastmoney/Sina/efinance/Tushare/TickFlow breadth observations. Counts are of provider universe only; minimum 3000 is a plausibility floor, not exchange coverage proof. Zero turnover rows are excluded from breadth (not necessarily confirmed suspensions). Conflicting duplicates and mixed dates reject/degrade. Missing amount/limit values remain null. Explicit per-symbol limit prices required; no estimated rule-based count. Previous-day turnover unavailable until a same-scope previous observation exists.
+- Separate industry/concept classification; bounded AkShare requests and Sina concept fallback; no new subscription. Sector amounts remain unavailable where units are not verified. Existing belong-board path carries provider provenance.
+- Dashboard renders validated payload rather than LLM markdown; archive records data quality. Existing legacy report consumers keep numeric compatibility defaults; not to be interpreted as verified observations. No extra LLM calls. Fallback may add provider requests when incomplete. No main changes.
+- Offline tests and two fixture renders; actual provider dates, full universe coverage, concept endpoint and limit-price availability require live Gate 2/3 validation. Same-scope previous turnover and sector amount acquisition are not established in this batch.

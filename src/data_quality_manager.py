@@ -174,7 +174,12 @@ def assess_stock(root, index, row):
     required=summarize(snapshot[k] for k in QUOTE_REQUIRED)
     quote_status=("AVAILABLE" if required["usable"]==required["expected"] else
                   "PARTIAL" if required["usable"] else "UNAVAILABLE" if folder else "NOT_ARCHIVED")
-    return {"code":code,"name":identity.get("name") or row.get("name") or code,"query_id":query_id,
+    from src.market_data_quality import enabled
+    board_data=load_json(folder,"fundamental.json") if folder and enabled() else None
+    raw_boards=(board_data or {}).get("belong_boards") if isinstance(board_data,dict) else None
+    if isinstance(raw_boards,dict): raw_boards=raw_boards.get("data")
+    boards=[{k:b.get(k) for k in ("name","code","type","source")} for b in (raw_boards or []) if isinstance(b,dict) and b.get("name")] if isinstance(raw_boards,list) else []
+    return {"boards":boards,"code":code,"name":identity.get("name") or row.get("name") or code,"query_id":query_id,
             "expected_trade_date":expected,"archive_reason":model_reason,"quote_status":quote_status,
             "groups":groups,"coverage":{k:summarize(v.values()) for k,v in groups.items()},
             "required_quote_coverage":required,"history":history_summary,

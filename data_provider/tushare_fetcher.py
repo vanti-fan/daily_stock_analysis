@@ -1193,6 +1193,7 @@ class TushareFetcher(BaseFetcher):
                         amount_val = safe_float(row.get('amount'), default=0.0)
 
                         results.append({
+                            **({"trade_date":row_date.isoformat(),"source":"tushare_index_daily"} if __import__("src.market_data_quality",fromlist=["enabled"]).enabled() else {}),
                             'code': ts_code.split('.')[0], # 兼容 sh000001 格式需转换，这里保持纯数字
                             'name': name,
                             'current': current,
@@ -1230,6 +1231,7 @@ class TushareFetcher(BaseFetcher):
 
         实时行情与日线均发起新请求，交易日历可从缓存读取。
         """
+        from src.market_data_quality import enabled, breadth_from_frame
         if self._api is None:
             return None
 
@@ -1260,7 +1262,9 @@ class TushareFetcher(BaseFetcher):
                 try:
                     df = self._call_api_with_rate_limit("rt_k", ts_code='3*.SZ,6*.SH,0*.SZ,92*.BJ')
                     if df is not None and not df.empty:
-                        return self._calc_market_stats(df)
+                        if enabled(): return breadth_from_frame(df,'tushare_rt_k')
+                        if enabled(): return breadth_from_frame(df,'tushare_daily',known_date=last_date)
+                    return self._calc_market_stats(df)
                 except TusharePermissionError:
                     return None
                 except Exception as e:
@@ -1541,7 +1545,9 @@ class TushareFetcher(BaseFetcher):
                 if df is not None and not df.empty:
                     change_col = 'pct_change'
                     name = 'industry'
-                    ranked = _get_rank_top_n(df, change_col, name, n)
+                    from src.market_data_quality import enabled, rank_frame
+                    ranked = (rank_frame(df,name,change_col,n,"tushare_ths_industry","industry",known_date=start_date)
+                              if enabled() else _get_rank_top_n(df, change_col, name, n))
                     if ranked is not None:
                         return ranked
             except TusharePermissionError:
@@ -1563,7 +1569,9 @@ class TushareFetcher(BaseFetcher):
                     df = df[df['content_type'] == '行业']  # 过滤出行业板块
                     change_col = 'pct_change'
                     name = 'name'
-                    ranked = _get_rank_top_n(df, change_col, name, n)
+                    from src.market_data_quality import enabled, rank_frame
+                    ranked = (rank_frame(df,name,change_col,n,"tushare_dc_industry","industry",known_date=start_date)
+                              if enabled() else _get_rank_top_n(df, change_col, name, n))
                     if ranked is not None:
                         return ranked
             except TusharePermissionError:

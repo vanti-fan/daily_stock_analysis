@@ -187,6 +187,9 @@ class MarketIndex:
     volume: float = 0.0          # 成交量（手）
     amount: float = 0.0          # 成交额（元）
     amplitude: float = 0.0       # 振幅(%)
+    source: Optional[str] = None
+    trade_date: Optional[str] = None
+    date_status: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -201,6 +204,7 @@ class MarketIndex:
             'volume': self.volume,
             'amount': self.amount,
             'amplitude': self.amplitude,
+            **({'source':self.source,'trade_date':self.trade_date,'date_status':self.date_status,'prev_close':self.prev_close} if self.source else {}),
         }
 
 
@@ -217,6 +221,8 @@ class MarketOverview:
     total_amount: float = 0.0           # 两市成交额（亿元）
     # north_flow: float = 0.0           # 北向资金净流入（亿元）- 已废弃，接口不可用
     
+    # Structured, provider-derived market quality (Phase 2.4.4).
+    breadth_quality: Optional[Dict[str, Any]] = None
     # 板块涨幅榜
     top_sectors: List[Dict] = field(default_factory=list)     # 涨幅前5板块
     bottom_sectors: List[Dict] = field(default_factory=list)  # 跌幅前5板块
@@ -703,7 +709,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         Returns:
             MarketOverview: 市场概览数据对象
         """
-        now = get_market_now("tw") if self.region == "tw" else datetime.now()
+        from src.market_data_quality import enabled, china_now
+        now = china_now() if self.region=="cn" and enabled() else get_market_now("tw") if self.region == "tw" else datetime.now()
         today = now.strftime('%Y-%m-%d')
         overview = MarketOverview(date=today)
         
@@ -749,7 +756,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                         prev_close=item['prev_close'],
                         volume=item['volume'],
                         amount=item['amount'],
-                        amplitude=item['amplitude']
+                        amplitude=item['amplitude'],
+                        source=item.get("source"),trade_date=item.get("trade_date"),date_status=item.get("date_status")
                     )
                     indices.append(index)
 
@@ -774,6 +782,16 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
             stats = self.data_manager.get_market_stats(purpose=f"market_review:{self.region}")
 
+            from src.market_data_quality import enabled, public_breadth
+            if self.region=="cn" and enabled():
+                overview.breadth_quality=public_breadth(stats)
+                # Legacy consumers require numeric fields; never use unverified sample
+                # as a complete market breadth signal. Actual nullable observations
+                # are passed in breadth_quality and rendered separately.
+                if stats and stats.get("breadth_usable") and stats.get("date_status")=="CURRENT_DATE":
+                    for key in ("up_count","down_count","flat_count","limit_up_count","limit_down_count","total_amount"):
+                        setattr(overview,key,stats.get(key) if stats.get(key) is not None else 0)
+                return
             if stats:
                 overview.up_count = stats.get('up_count', 0)
                 overview.down_count = stats.get('down_count', 0)
@@ -1237,7 +1255,11 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             }
 
         self._apply_structured_market_review_fields(payload, overview, light, llm_structured)
-
+        if overview.breadth_quality is not None:
+            payload["market_data_quality_version"]="2.4.4"
+            payload["breadth"]=dict(overview.breadth_quality)
+            payload["index_coverage"]={"expected":6,"observed":len(overview.indices),
+                                       "coverage_verified":False}
         return payload
 
     # ------------------------------------------------------------------
@@ -1806,6 +1828,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
     def _build_stats_block(self, overview: MarketOverview) -> str:
         """Build market statistics block."""
+        if overview.breadth_quality is not None:
+            from src.market_data_quality import stats_text
+            return stats_text(overview.breadth_quality,self._get_review_language()=="en")
         has_stats = overview.up_count or overview.down_count or overview.total_amount
         has_market_signal = bool(self._supports_market_light() and (overview.indices or has_stats))
         if not has_stats and not has_market_signal:
@@ -2353,6 +2378,12 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
             if data_limit_lines:
                 data_limits_block = "## 数据边界\n" + "\n".join(data_limit_lines)
 
+        if overview.breadth_quality is not None:
+            from src.market_data_quality import stats_text
+            stats_block=stats_text(overview.breadth_quality,review_language=="en")
+            data_limits_block += ("\nMarket snapshot dates and provider universe are not independently verified; do not infer missing data."
+                                  if review_language=="en" else
+                                  "\n市场样本覆盖和供应商交易日未独立核实；禁止补造缺失成交额、涨跌停或资金流。")
         data_no_indices_hint = (
             "注意：由于行情数据获取失败，请主要根据【市场新闻】进行定性分析和总结，不要编造具体的指数点位。"
             if not indices_text
