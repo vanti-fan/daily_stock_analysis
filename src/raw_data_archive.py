@@ -32,7 +32,8 @@ QUOTE_KEYS = ("code", "name", "source", "fetched_at", "provider_timestamp", "quo
               "pre_close", "pe_ratio", "pb_ratio", "total_mv", "circ_mv", "change_60d",
               "high_52w", "low_52w", "field_sources")
 CHIP_KEYS = ("code", "date", "source", "profit_ratio", "avg_cost", "cost_90_low",
-             "cost_90_high", "cost_70_low", "cost_70_high", "concentration_90", "concentration_70")
+             "cost_90_high", "cost_70_low", "cost_70_high", "concentration_90", "concentration_70",
+             "data_kind", "price_basis", "present_fields", "evidence")
 TREND_KEYS = ("code", "ma5", "ma10", "ma20", "ma60", "bias_ma5", "bias_ma10", "bias_ma20",
               "volume_ratio_5d", "macd_dif", "macd_dea", "macd_bar", "rsi_6", "rsi_12",
               "rsi_24", "trend_strength", "signal_score", "trend_status", "buy_signal")
