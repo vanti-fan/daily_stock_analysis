@@ -190,6 +190,19 @@ def technical_fields(trend, *, identity, sample_count=None, trade_date=None,
 def chip_fields(chip, identity):
     require_identity(chip, identity)
     fields = {}
+    from src import chip_data_quality as cq
+    strict = cq.enabled() or bool(read(chip,"data_kind"))
+    if strict:
+        error = cq.snapshot_error(chip,identity.code,read(chip,"date"))
+        for key in cq.FIELDS:
+            ratio=key in cq.RATIOS
+            fields[key]=field(key, None if error else read(chip,key),
+                "fraction" if ratio else identity.currency,
+                source=string(read(chip,"source")),trade_date=day(read(chip,"date")),
+                origin=Origin.COMPUTED,status=DataStatus.NOT_PROVIDED if error else DataStatus.AVAILABLE,
+                reason=error or "model_derived_not_actual_holdings")
+        return ChipDistribution(fields)
+
     source = string(read(chip, "source"))
     d = day(read(chip, "date"))
     # Upstream object initializes ratios to 0; no individual presence contract.
