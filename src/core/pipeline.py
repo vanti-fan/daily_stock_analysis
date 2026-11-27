@@ -948,14 +948,17 @@ class StockAnalysisPipeline:
 
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
             news_context = None
-            persisted_intelligence_context = self._load_persisted_intelligence_context(
+            from src import news_source_quality as nq
+            strict_news=nq.enabled() and not is_index and nq.eligible(code)
+            # Unreviewed historical intelligence is not current-query evidence.
+            persisted_intelligence_context = None if strict_news else self._load_persisted_intelligence_context(
                 code=code,
                 stock_name=stock_name,
                 market=market or "cn",
             )
             news_result_count: Optional[int] = None
             self._emit_progress(46, f"{stock_name}：正在检索新闻与舆情")
-            if self.search_service is not None and self.search_service.is_available:
+            if self.search_service is not None and (strict_news or self.search_service.is_available):
                 logger.info(f"{log_stock_name}({code}) starting multi-dimensional intelligence search...")
 
                 # 检索已发起：此后即使一条都没拿到，也是「执行了但零命中」而非
