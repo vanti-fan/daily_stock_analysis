@@ -110,8 +110,28 @@ def quote_fields(quote, identity):
                 status, reason = DataStatus.STALE, "provider_marked_stale"
             elif stale is not False or source is None or metadata["trade_date"] is None and metadata["observed_at"] is None:
                 status, reason = DataStatus.UNVERIFIED, "missing_freshness_or_provenance"
+        # The primary quote's identity is not the provenance of supplemented fields.
+        lineage = read(quote, "field_sources")
+        field_meta = dict(metadata)
+        entry = lineage.get(upstream) if isinstance(lineage, Mapping) else None
+        if entry is not None:
+            actual_source = string(read(entry, "source"))
+            actual_date = day(read(entry, "quote_date"))
+            actual_time = string(read(entry, "timestamp"))
+            if actual_source == source and actual_source is not None:
+                field_meta.update(source=actual_source,
+                                  trade_date=actual_date or metadata["trade_date"],
+                                  observed_at=actual_time or metadata["observed_at"])
+            else:
+                field_meta.update(source=actual_source, trade_date=actual_date,
+                                  observed_at=actual_time, fetched_at=None)
+            if raw is not None and status is None:
+                if not actual_source or not field_meta["trade_date"]:
+                    status, reason = DataStatus.UNVERIFIED, "incomplete_field_lineage"
+                elif metadata["trade_date"] and field_meta["trade_date"] != metadata["trade_date"]:
+                    status, reason = DataStatus.CONFLICT, "field_lineage_date_mismatch"
         fields[key] = field(key, raw, unit, status=status, reason=reason,
-                            positive=positive, minimum=minimum, **metadata)
+                            positive=positive, minimum=minimum, **field_meta)
     return MarketSnapshot(fields, missing, string(read(quote, "fallback_from")), provider_quality)
 
 
