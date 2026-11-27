@@ -106,6 +106,7 @@ class RealtimeSource(Enum):
     LONGBRIDGE = "longbridge"       # 长桥（美股/港股兜底）
     FUTU = "futu"                   # 富途 OpenD（港股）
     XUEQIU = "xueqiu"
+    PYTDX = "pytdx"
     FALLBACK = "fallback"           # 降级兜底
 
 

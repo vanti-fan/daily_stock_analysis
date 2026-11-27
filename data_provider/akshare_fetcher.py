@@ -609,6 +609,10 @@ class AkshareFetcher(BaseFetcher):
             (self._fetch_stock_data_tx, "腾讯财经"),
         ]
 
+        from src.intelligent_fallback import strict_history
+        if strict_history(stock_code):
+            # Direct TencentFetcher verifies qfqday; avoid opaque library fallback.
+            methods = methods[:2]
         last_error = None
 
         for fetch_method, source_name in methods:
@@ -647,13 +651,12 @@ class AkshareFetcher(BaseFetcher):
             import time as _time
             api_start = _time.time()
 
-            df = ak.stock_zh_a_hist(
-                symbol=stock_code,
-                period="daily",
-                start_date=start_date.replace('-', ''),
-                end_date=end_date.replace('-', ''),
-                adjust="qfq"
-            )
+            from src.intelligent_fallback import strict_history
+            kwargs = dict(symbol=stock_code, period="daily", start_date=start_date.replace("-", ""), end_date=end_date.replace("-", ""), adjust="qfq")
+            if strict_history(stock_code):
+                df = _akshare_call_with_timeout(ak.stock_zh_a_hist, timeout=self._history_call_timeout, call_name="ak.stock_zh_a_hist", **kwargs)
+            else:
+                df = ak.stock_zh_a_hist(**kwargs)
 
             api_elapsed = _time.time() - api_start
 

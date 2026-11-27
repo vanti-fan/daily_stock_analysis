@@ -30,7 +30,7 @@ QUOTE_KEYS = ("code", "name", "source", "fetched_at", "provider_timestamp", "quo
               "missing_fields", "price", "change_pct", "change_amount", "volume", "amount",
               "volume_ratio", "turnover_rate", "amplitude", "open_price", "high", "low",
               "pre_close", "pe_ratio", "pb_ratio", "total_mv", "circ_mv", "change_60d",
-              "high_52w", "low_52w")
+              "high_52w", "low_52w", "field_sources")
 CHIP_KEYS = ("code", "date", "source", "profit_ratio", "avg_cost", "cost_90_low",
              "cost_90_high", "cost_70_low", "cost_70_high", "concentration_90", "concentration_70")
 TREND_KEYS = ("code", "ma5", "ma10", "ma20", "ma60", "bias_ma5", "bias_ma10", "bias_ma20",
@@ -38,7 +38,7 @@ TREND_KEYS = ("code", "ma5", "ma10", "ma20", "ma60", "bias_ma5", "bias_ma10", "b
               "rsi_24", "trend_strength", "signal_score", "trend_status", "buy_signal")
 FUNDAMENTAL_KEYS = ("code", "status", "coverage", "source_chain", "fundamental",
                     "valuation", "financial", "belong_boards", "capital_flow", "lhb",
-                    "corporate_events")
+                    "corporate_events", "growth", "earnings", "institution", "dragon_tiger", "boards", "errors")
 MARKET_KEYS = ("region", "date", "generated_at", "indices", "breadth", "sectors",
                "concepts", "market_light", "market_scope")
 RESEARCH_KEYS = ("code", "success", "sentiment_score", "trend_prediction",
@@ -123,7 +123,7 @@ def publish(root, *, kind, query_id, identity, files, metadata=None):
 
 def archive_inputs(root, *, code, name, market, query_id, rows=None, quote=None,
                    trend=None, trend_input_count=None, trend_trade_date=None,
-                   chip=None, fundamental=None, expected_trade_date=None):
+                   chip=None, fundamental=None, expected_trade_date=None, history_metadata=None):
     raw_rows = [project(row,HISTORY_KEYS) for row in (rows if rows is not None else [])]
     sources = sorted({r["data_source"] for r in raw_rows if r.get("data_source")})
     currency = string(read(quote,"currency")) or {
@@ -143,7 +143,8 @@ def archive_inputs(root, *, code, name, market, query_id, rows=None, quote=None,
     }
     metadata = {"history_count":len(raw_rows),"history_sources":sources,
                 "history_origin":"stored_daily_bars_before_realtime_augmentation",
-                "history_adjustment":None,"volume_unit":"share","amount_unit":currency,
+                "history_adjustment":(history_metadata or {}).get("adjustment"),"history_evidence":history_metadata,
+                "volume_unit":"share","amount_unit":currency,
                 "expected_trade_date":expected_trade_date,
                 "availability":{"history":bool(raw_rows),"quote":quote is not None,
                                 "technical":trend is not None,"chip":chip is not None,

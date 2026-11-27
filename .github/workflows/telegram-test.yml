@@ -99,10 +99,11 @@ jobs:
       - name: Run Phase 2.4.3 offline routing and adjustment tests
         run: |
           mkdir -p image-test/phase243
-          python -m compileall -q src/intelligent_fallback.py data_provider/base.py data_provider/tencent_fetcher.py data_provider/akshare_fetcher.py data_provider/realtime_types.py src/storage.py src/core/pipeline.py
+          python -m compileall -q src/intelligent_fallback.py data_provider/base.py data_provider/tencent_fetcher.py data_provider/akshare_fetcher.py data_provider/baostock_fetcher.py data_provider/pytdx_fetcher.py data_provider/realtime_types.py src/storage.py src/core/pipeline.py src/raw_data_archive.py
           set -o pipefail
           python -m unittest discover -s tests -p test_intelligent_fallback.py -v 2>&1 | tee image-test/phase243/test-results.txt
-          python -m unittest discover -s tests -p test_tencent_fetcher.py -v 2>&1 | tee image-test/phase243/tencent-regression.txt
+          python -m pip install pytest
+          python -m pytest -q tests/test_tencent_fetcher.py tests/test_pytdx_fetcher.py 2>&1 | tee image-test/phase243/provider-regression.txt
 
       - name: Run Phase 2.4.2 offline health monitor tests
         run: |

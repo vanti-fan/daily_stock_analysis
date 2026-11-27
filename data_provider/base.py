@@ -2718,7 +2718,7 @@ class DataFetcherManager:
         primary_fallback_from: Optional[str] = None
         
         for source_index, source in enumerate(source_priority):
-            if strict_quote and primary_quote is not None and (source == "akshare_xq" or supplement_attempts >= 1):
+            if strict_quote and primary_quote is not None and (source in {"akshare_xq", "pytdx"} or supplement_attempts >= 1):
                 break
             if strict_quote and primary_quote is not None:
                 supplement_attempts += 1
@@ -2768,6 +2768,13 @@ class DataFetcherManager:
                         )
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, source="tencent")
                 
+                elif source == "pytdx" and strict_quote:
+                    fetcher = self._get_fetcher_by_name("PytdxFetcher", capability="realtime_quote")
+                    if fetcher is not None:
+                        record_provider_run_started(data_type="realtime_quote", provider=source, operation="get_realtime_quote")
+                        raw_quote = self._call_fetcher_method(fetcher, "get_realtime_quote", stock_code)
+                        quote = ifb.parse_pytdx(raw_quote, stock_code)
+
                 elif source == "akshare_xq" and strict_quote:
                     fetcher = self._get_fetcher_by_name("AkshareFetcher", capability="realtime_quote")
                     if fetcher is not None:
@@ -4220,8 +4227,6 @@ class DataFetcherManager:
             "total_mv": getattr(quote_payload, "total_mv", None) if quote_payload else None,
             "circ_mv": getattr(quote_payload, "circ_mv", None) if quote_payload else None,
         }
-        if ifb.strict_history(stock_code):
-            valuation_payload = {k: v if ifb.valid_quote_value(k, v) else None for k,v in valuation_payload.items()}
         valuation_status = self._infer_block_status(
             valuation_payload,
             "partial" if quote_payload is not None else "not_supported",
@@ -4588,6 +4593,8 @@ class DataFetcherManager:
             "total_mv": getattr(quote_payload, "total_mv", None) if quote_payload else None,
             "circ_mv": getattr(quote_payload, "circ_mv", None) if quote_payload else None,
         }
+        if ifb.strict_history(stock_code):
+            valuation_payload = {k: v if ifb.valid_quote_value(k, v) else None for k,v in valuation_payload.items()}
         valuation_status = self._infer_block_status(
             valuation_payload,
             "partial" if quote_payload is not None else "not_supported",

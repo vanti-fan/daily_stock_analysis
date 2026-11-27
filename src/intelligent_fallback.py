@@ -4,13 +4,16 @@ import math
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from contextvars import ContextVar
+
+history_evidence = ContextVar("dsa_history_evidence", default=None)
 
 BASELINE = "f199f645607b6626914bdb1756254c0c9daa12c9"
 HISTORY = {"AkshareFetcher":"QFQ", "EfinanceFetcher":"QFQ", "BaostockFetcher":"QFQ",
            "TencentFetcher":"QFQ", "TushareFetcher":"UNADJUSTED", "PytdxFetcher":"UNKNOWN"}
 GROUPS = {"tencent":"tencent", "akshare_qq":"tencent", "akshare_sina":"sina",
           "akshare_em":"eastmoney", "efinance":"eastmoney", "akshare_xq":"xueqiu",
-          "tushare":"tushare", "tickplus":"tickplus", "tickflow":"tickflow"}
+          "pytdx":"tdx","tushare":"tushare", "tickplus":"tickplus", "tickflow":"tickflow"}
 DAILY_GROUPS = {"EfinanceFetcher":"eastmoney","BaostockFetcher":"baostock",
                 "TencentFetcher":"tencent","AkshareFetcher":"MULTI"}
 class AdjustmentError(ValueError):
@@ -40,7 +43,7 @@ def ranked(items,key,groups,category):
             for r in build_report(path)["providers"]:
                 if r["category"]==category and r["operation"]=="get_"+category and r["completed"]>=3 and r["success_rate"] is not None:
                     evidence[r["provider"]]=r
-        except (OSError,ValueError,KeyError,TypeError):
+        except (OSError,ValueError,KeyError,TypeError,AttributeError):
             pass
     def rank(item):
         name=key(item)
@@ -66,7 +69,8 @@ def quote_order(routes):
         route="tencent" if route=="akshare_qq" else route
         if route not in out: out.append(route)
     # New Xueqiu route is opt-in and only considered after existing routes fail.
-    return ranked([x for x in out if x!="akshare_xq"],lambda x:x,GROUPS,"realtime_quote") + (["akshare_xq"] if "akshare_xq" in out else [])
+    optional={"akshare_xq","pytdx"}
+    return ranked([x for x in out if x not in optional],lambda x:x,GROUPS,"realtime_quote") + [x for x in out if x in optional]
 
 def mark_history(df,provider,route=None):
     df.attrs["dsa_history"]={"provider":provider,"route":route or provider,
@@ -128,6 +132,7 @@ def _timestamp(value):
 
 def compatible_quotes(primary,secondary):
     if getattr(primary,"code",None)!=getattr(secondary,"code",None): return False
+    if getattr(primary,"is_stale",None) is True or getattr(secondary,"is_stale",None) is True: return False
     if getattr(primary,"currency",None) and getattr(secondary,"currency",None) and primary.currency!=secondary.currency: return False
     a,b=(_timestamp(getattr(q,"provider_timestamp",None)) for q in (primary,secondary))
     # No fabricated fetch-time or same-day substitution for market timestamps.
@@ -142,7 +147,7 @@ def compatible_quotes(primary,secondary):
 def valid_quote_value(field,value):
     try:
         n=float(value)
-        return math.isfinite(n) and (field=="pe_ratio" or n>=0)
+        return math.isfinite(n) and (n>0 if field=="price" else field=="pe_ratio" or n>=0)
     except (ValueError,TypeError): return False
 
 
@@ -185,3 +190,26 @@ def parse_xueqiu(frame,code):
         pe_ratio=number("市盈率(动)",True),pb_ratio=number("市净率"),
         total_mv=number("资产净值/总市值"),circ_mv=number("流通值"),
         turnover_rate=number("周转率"),amplitude=number("振幅"))
+
+
+def validate_baostock_flags(frame):
+    if "adjustflag" not in frame or frame.empty or not frame["adjustflag"].astype(str).eq("2").all():
+        raise AdjustmentError("Baostock response does not confirm QFQ")
+
+def parse_pytdx(row,code):
+    from data_provider.realtime_types import UnifiedRealtimeQuote,RealtimeSource
+    if not isinstance(row,dict) or row.get("code")!=code or row.get("identity_verified") is not True:
+        return None
+    def n(key):
+        v=row.get(key)
+        return float(v) if valid_quote_value(key,v) else None
+    price=n("price")
+    if price is None: return None
+    pre=n("pre_close")
+    return UnifiedRealtimeQuote(code=code,name=row.get("name") or "",source=RealtimeSource.PYTDX,
+        market="cn",currency="CNY",price=price,open_price=n("open"),high=n("high"),low=n("low"),
+        pre_close=pre,change_pct=(price/pre-1)*100 if pre and pre>0 else None)
+
+def history_metadata(code):
+    value=history_evidence.get()
+    return value[1] if value is not None and value[0]==code else None

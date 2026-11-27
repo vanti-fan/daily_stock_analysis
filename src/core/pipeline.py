@@ -620,8 +620,15 @@ class StockAnalysisPipeline:
             if _is_current_stock_cancelled():
                 return False, "股票分析已取消"
 
+            if strict_qfq:
+                from src.intelligent_fallback import validate_history, AdjustmentError, history_evidence
+                validate_history(df, source_name, end_date=target_date.isoformat())
+                if pd.to_datetime(df["date"]).max().date() != target_date:
+                    raise AdjustmentError("Latest QFQ bar does not match closed trading date")
             # 保存到数据库
             saved_count = self.db.save_daily_data(df, code, source_name)
+            if strict_qfq:
+                history_evidence.set((code, dict(df.attrs["dsa_history"])))
             logger.info(f"{stock_name}({code}) data saved (source: {source_name}, added {saved_count} rows)")
 
             return True, None
@@ -638,6 +645,7 @@ class StockAnalysisPipeline:
         query_id: str,
         current_time: Optional[datetime] = None,
         analysis_target: Optional[AnalysisTarget] = None,
+        history_ready: bool = True,
     ) -> Optional[AnalysisResult]:
         """
         分析单只股票（增强版：含量比、换手率、筹码分析、多维度情报）
@@ -757,6 +765,14 @@ class StockAnalysisPipeline:
 
             if _is_current_stock_cancelled():
                 return None
+            if not history_ready:
+                from src.raw_data_archive import record as record_archive
+                record_archive("inputs", code=code, name=stock_name, market="cn", query_id=query_id,
+                               quote=realtime_quote, expected_trade_date=str(self._resolve_resume_target_date(code, current_time=current_time, analysis_target=analysis_target)),
+                               history_metadata={"status":"UNAVAILABLE","reason":"QFQ_HISTORY_REJECTED"})
+                logger.warning("[%s] strict history unavailable; quote retained, AI skipped", code)
+                return None
+
             # Step 2: 获取筹码分布 - 使用统一入口，带熔断保护
             # 指数目标跳过筹码分布（INDEX_SKIP_MODULES 能力矩阵）
             chip_data = None
@@ -897,7 +913,9 @@ class StockAnalysisPipeline:
 
             if not _is_current_stock_cancelled():
                 from src.raw_data_archive import record as record_archive
+                from src.intelligent_fallback import history_metadata
                 record_archive('inputs', code=code, name=stock_name, market=market,
+                               history_metadata=history_metadata(code),
                                query_id=query_id, rows=archive_rows, quote=realtime_quote,
                                trend=trend_result, trend_input_count=archive_sample_count,
                                trend_trade_date=archive_trade_date, chip=chip_data,
@@ -3186,6 +3204,9 @@ class StockAnalysisPipeline:
         使用当日实时行情补齐历史 OHLCV，用于盘中 MA 计算。
         Issue #234：技术指标使用实时价格，而不是沿用昨日收盘价。
         """
+        from src.intelligent_fallback import strict_history
+        if strict_history(code):
+            return df
         if df is None or df.empty or 'close' not in df.columns:
             return df
         if realtime_quote is None:
@@ -3813,6 +3834,8 @@ class StockAnalysisPipeline:
             code, current_time=current_time, analysis_target=analysis_target
         )
         token = set_frozen_target_date(frozen_td)
+        from src.intelligent_fallback import strict_history, history_evidence
+        history_token = history_evidence.set(None)
         effective_query_id = analysis_query_id or getattr(self, "query_id", None) or uuid.uuid4().hex
         effective_trace_id = getattr(self, "trace_id", None) or effective_query_id
         diag_token = None
@@ -3848,6 +3871,8 @@ class StockAnalysisPipeline:
                 return None
             
             analyze_kwargs = {"query_id": effective_query_id}
+            if strict_history(code) and not success:
+                analyze_kwargs["history_ready"] = False
             if current_time is not None:
                 analyze_kwargs["current_time"] = current_time
             if analysis_target is not None:
@@ -3886,6 +3911,7 @@ class StockAnalysisPipeline:
             return None
         finally:
             reset_run_diagnostic_context(diag_token)
+            history_evidence.reset(history_token)
             reset_frozen_target_date(token)
     
     def _prefetch_batch_data(self, stock_codes: List[str], dry_run: bool) -> None:

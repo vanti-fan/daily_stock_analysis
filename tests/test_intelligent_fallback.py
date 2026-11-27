@@ -72,6 +72,39 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(q.source.value,"xueqiu")
         self.assertIsNone(q.provider_timestamp)
         self.assertIsNone(p.parse_xueqiu(d,"300394"))
+    def test_baostock_response_flag(self):
+        p.validate_baostock_flags(pd.DataFrame({"adjustflag":["2","2"]}))
+        for d in (pd.DataFrame({"adjustflag":["2","3"]}),pd.DataFrame({"close":[1]})):
+            with self.assertRaises(p.AdjustmentError): p.validate_baostock_flags(d)
+    def test_pytdx_quote(self):
+        q=p.parse_pytdx({"code":"002938","identity_verified":True,"price":10,"pre_close":9},"002938")
+        self.assertEqual(q.source.value,"pytdx")
+        self.assertAlmostEqual(q.change_pct,100/9)
+        self.assertIsNone(q.volume)
+        self.assertIsNone(q.provider_timestamp)
+        self.assertIsNone(p.parse_pytdx({"code":"002938","price":10},"002938"))
+    def test_optional_sources_only_after_existing(self):
+        with patch.dict(os.environ,{"DSA_PROVIDER_HEALTH_JOURNAL":""}):
+            self.assertEqual(p.quote_order(["pytdx","akshare_xq","tencent"]),["tencent","pytdx","akshare_xq"])
+    def test_actual_manager_daily_fallback(self):
+        from data_provider.base import DataFetcherManager
+        class Fake:
+            def __init__(self,name,priority,bad=False):
+                self.name=name; self.priority=priority; self.bad=bad; self.calls=0
+            def get_daily_data(self,**kw):
+                self.calls+=1
+                return frame() if self.bad else p.mark_history(frame(),self.name)
+        a=Fake("TushareFetcher",0); b=Fake("TencentFetcher",1,True); c=Fake("BaostockFetcher",2)
+        DataFetcherManager.reset_daily_source_health()
+        try:
+            with patch.dict(os.environ,{"DSA_INTELLIGENT_FALLBACK":"true","DSA_PROVIDER_HEALTH_JOURNAL":""}):
+                manager=DataFetcherManager([a,b,c])
+                result,source=manager.get_daily_data("002938",start_date="2026-11-25",end_date="2026-11-26")
+                self.assertEqual(source,"BaostockFetcher")
+                self.assertEqual((a.calls,b.calls,c.calls),(0,1,1))
+                self.assertEqual(len(result),2)
+        finally:
+            DataFetcherManager.reset_daily_source_health()
     def test_gate(self):
         with patch.dict(os.environ,{"DSA_INTELLIGENT_FALLBACK":"true"}):
             self.assertTrue(p.strict_history("002938"))

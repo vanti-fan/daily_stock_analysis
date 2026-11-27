@@ -223,9 +223,11 @@ class BaostockFetcher(BaseFetcher):
             try:
                 # 查询日线数据
                 # adjustflag: 1-后复权，2-前复权，3-不复权
+                from src.intelligent_fallback import strict_history, validate_baostock_flags
+                strict_qfq = strict_history(stock_code)
                 rs = bs.query_history_k_data_plus(
                     code=bs_code,
-                    fields="date,open,high,low,close,volume,amount,pctChg",
+                    fields="date,open,high,low,close,volume,amount,pctChg" + (",adjustflag" if strict_qfq else ""),
                     start_date=start_date,
                     end_date=end_date,
                     frequency="d",  # 日线
@@ -244,7 +246,8 @@ class BaostockFetcher(BaseFetcher):
                     raise DataFetchError(f"Baostock 未查询到 {stock_code} 的数据")
                 
                 df = pd.DataFrame(data_list, columns=rs.fields)
-                
+                if strict_qfq:
+                    validate_baostock_flags(df)
                 return df
                 
             except Exception as e:

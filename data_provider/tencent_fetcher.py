@@ -62,7 +62,7 @@ class TencentFetcher(BaseFetcher):
         response.raise_for_status()
         payload = response.json()
         from src.intelligent_fallback import strict_history
-        rows = _extract_kline_rows(payload, symbol=symbol, require_qfq=strict_history(normalize_stock_code(stock_code)))
+        rows = _extract_kline_rows(payload, symbol=symbol, require_qfq=strict_history(stock_code))
         if not rows:
             logger.info("TencentFetcher empty daily history for %s", stock_code)
             return _empty_daily_frame()

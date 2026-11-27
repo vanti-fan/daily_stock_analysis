@@ -597,7 +597,12 @@ class PytdxFetcher(BaseFetcher):
                 
                 if data and len(data) > 0:
                     quote = data[0]
+                    from src.intelligent_fallback import strict_history
+                    strict_quote = strict_history(stock_code)
+                    if strict_quote and (str(quote.get("code","")) != code or str(quote.get("market","")) != str(market)):
+                        return None
                     return {
+                        **({"identity_verified": True} if strict_quote else {}),
                         'code': stock_code,
                         'name': str(quote.get('name') or '').strip(),
                         'price': quote.get('price', 0),
