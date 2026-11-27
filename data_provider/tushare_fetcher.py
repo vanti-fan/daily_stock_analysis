@@ -1643,15 +1643,19 @@ class TushareFetcher(BaseFetcher):
             logger.warning(f"[Tushare] TushareFetcher does not support chip distribution for HK stock {stock_code}")
             return None
         
+        from src import chip_data_quality as cq
+        strict = cq.enabled()
+        if strict and not cq.tushare_enabled(): return None
         if self._api is None or self.is_api_denied("cyq_chips"):
             return None
 
         try:
             # 19点之后才有当天数据
-            start_date = self.get_trade_time(early_time='00:00', late_time='19:00') 
+            start_date = cq.expected_day() if strict else self.get_trade_time(early_time='00:00', late_time='19:00') 
             if not start_date:
                 return None
 
+            if strict: start_date = start_date.replace('-', '')
             ts_code = self._convert_stock_code(stock_code)
 
             df = self._call_api_with_rate_limit(
@@ -1674,10 +1678,16 @@ class TushareFetcher(BaseFetcher):
                 current_price = safe_float(daily_df.iloc[0].get('close'))
                 if current_price is None or current_price <= 0:
                     return None
+                evidence = cq.validate_tushare_inputs(df, daily_df, ts_code, start_date) if strict else None
                 metrics = self.compute_cyq_metrics(df, current_price)
 
                 chip = ChipDistribution(
                     code=stock_code,
+                    source='tushare_cyq_chips' if strict else 'tushare',
+                    data_kind='PROVIDER_DISTRIBUTION_DERIVED' if strict else None,
+                    price_basis='UNADJUSTED_REQUESTED' if strict else None,
+                    present_fields=list(cq.FIELDS) if strict else None,
+                    evidence=evidence,
                     date=datetime.strptime(start_date, '%Y-%m-%d' if '-' in start_date else '%Y%m%d').strftime('%Y-%m-%d'),
                     profit_ratio=metrics['获利比例'],
                     avg_cost=metrics['平均成本'],
@@ -1694,6 +1704,7 @@ class TushareFetcher(BaseFetcher):
                     f"avg_cost={chip.avg_cost}, concentration_90={chip.concentration_90:.2%}, "
                     f"concentration_70={chip.concentration_70:.2%}"
                 )
+                if strict and cq.snapshot_error(chip, stock_code, start_date, self.name): return None
                 return chip
         except TusharePermissionError:
             return None
