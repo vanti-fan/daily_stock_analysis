@@ -127,6 +127,15 @@ jobs:
           python -m pytest -q tests/test_chip_distribution_manager.py tests/test_chip_structure_fallback.py 2>&1 | tee image-test/phase245/legacy-regression.txt
           PYTHONPATH=tests:. python -c "from test_chip_data_quality import render_fixture; render_fixture('image-test/phase245')"
 
+      - name: Run Phase 2.4.6 offline news quality tests
+        run: |
+          mkdir -p image-test/phase246
+          set -o pipefail
+          python -m compileall -q src/news_source_quality.py src/search_service.py src/agent/tools/search_tools.py src/core/pipeline.py src/raw_data_archive.py src/data_quality_manager.py src/financial_dashboard.py
+          python -m unittest discover -s tests -p test_news_source_quality.py -v 2>&1 | tee image-test/phase246/test-results.txt
+          python -m pytest -q tests/test_search_tools_persistence.py tests/test_search_news_freshness.py tests/test_search_retrieval_time.py tests/test_search_tavily_provider.py 2>&1 | tee image-test/phase246/legacy-regression.txt
+          PYTHONPATH=tests:. python -c "from test_news_source_quality import render_fixture; render_fixture('image-test/phase246')"
+
       - name: Run Phase 2.4.2 offline health monitor tests
         run: |
           python -m compileall -q src/provider_health_monitor.py src/services/run_diagnostics.py data_provider/base.py
