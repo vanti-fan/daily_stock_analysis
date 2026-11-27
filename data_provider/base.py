@@ -3100,9 +3100,15 @@ class DataFetcherManager:
 
         circuit_breaker = get_chip_circuit_breaker()
 
+        from src import chip_data_quality as cq
+        strict = cq.enabled()
+        target = cq.expected_day() if strict else None
+        if strict and (not cq.eligible(stock_code) or not target): return None
+        fetchers = self._get_fetchers_snapshot()
+        if strict: fetchers = cq.ordered_candidates(fetchers)
         candidate_fetchers = []
         # 直接遍历管理器已经按 priority 排好序的数据源列表
-        for fetcher in self._get_fetchers_snapshot():
+        for fetcher in fetchers:
             # 只处理实现了筹码分布逻辑的数据源
             if not hasattr(fetcher, 'get_chip_distribution'):
                 continue
@@ -3133,7 +3139,8 @@ class DataFetcherManager:
                 )
                 chip = self._call_fetcher_method(fetcher, 'get_chip_distribution', stock_code)
                 latency_ms = int((time.time() - attempt_start) * 1000)
-                if _is_meaningful_chip_distribution(chip):
+                rejection = cq.snapshot_error(chip, stock_code, target, fetcher_name) if strict else None
+                if (rejection is None if strict else _is_meaningful_chip_distribution(chip)):
                     record_provider_run(
                         data_type="chip",
                         provider=fetcher_name,
@@ -3152,8 +3159,8 @@ class DataFetcherManager:
                         operation="get_chip_distribution",
                         success=False,
                         latency_ms=latency_ms,
-                        error_type="empty",
-                        error_message="empty or incomplete chip distribution",
+                        error_type="empty" if chip is None else "invalid_chip_snapshot",
+                        error_message=rejection or "empty or incomplete chip distribution",
                         fallback_to=fallback_to,
                         record_count=0,
                     )
