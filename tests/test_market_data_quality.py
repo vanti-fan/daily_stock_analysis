@@ -123,6 +123,60 @@ class MarketQualityTest(unittest.TestCase):
             p=archive_market(Path(tmp),region="cn",query_id="model",payload=data)
             self.assertEqual(json.loads((p/"market_data.json").read_text())["financial_market_data"],data["financial_market_data"])
             self.assertTrue(verify(Path(tmp)))
+    def test_market_light_actual_scoring(self):
+        from src.market_analyzer import MarketAnalyzer, MarketOverview, MarketIndex
+        from src.core.market_profile import get_profile
+        from types import SimpleNamespace
+        analyzer=MarketAnalyzer.__new__(MarketAnalyzer)
+        analyzer.region="cn"
+        analyzer.profile=get_profile("cn")
+        analyzer.config=SimpleNamespace(report_language="zh")
+        indices=[MarketIndex(code=code,name=name,change_pct=2,date_status="CURRENT_DATE",trade_date="2026-11-26") for code,name in q.INDEX_NAMES.items()]
+        for label,rows,quality,expected in [
+            ("missing",[],{"status":"UNAVAILABLE"},"unavailable"),
+            ("index_only",indices,{"coverage_verified":False},"partial"),
+            ("missing_limits",indices,{"coverage_verified":True,"date_status":"CURRENT_DATE","limit_up_count":None,"limit_down_count":None},"partial"),
+            ("complete",indices,{"coverage_verified":True,"date_status":"CURRENT_DATE","limit_up_count":80,"limit_down_count":20},"ok"),
+        ]:
+            with self.subTest(label=label):
+                o=MarketOverview(date="2026-11-26",indices=rows,breadth_quality=quality,
+                    up_count=800 if rows else 0,down_count=200 if rows else 0,
+                    limit_up_count=80 if label=="complete" else 0,limit_down_count=20 if label=="complete" else 0)
+                scores=analyzer._build_market_light_scores(o)
+                snapshot=analyzer.build_market_light_snapshot(o)
+                self.assertEqual(scores["data_quality"],expected)
+                self.assertEqual(snapshot["data_quality"],expected)
+                self.assertEqual(snapshot["dimensions"],scores["dimensions"])
+                if expected!="ok":
+                    self.assertEqual(snapshot["status"],"yellow")
+                    self.assertEqual(scores["temperature_label"],"数据不完整")
+                    self.assertEqual(snapshot["temperature_label"],"数据不完整")
+                    self.assertFalse(scores["dimensions"]["limit"]["available"])
+                else:
+                    self.assertEqual(snapshot["status"],"green")
+                    self.assertEqual(scores["score"],78)
+                    self.assertTrue(all(x["available"] for x in scores["dimensions"].values()))
+    def test_pool_model_archive_sync(self):
+        from src.raw_data_archive import archive_market,verify
+        from src.market_analyzer import MarketAnalyzer,MarketOverview
+        from src.core.market_profile import get_profile
+        from types import SimpleNamespace
+        analyzer=MarketAnalyzer.__new__(MarketAnalyzer)
+        analyzer.region="cn"
+        analyzer.profile=get_profile("cn")
+        analyzer.config=SimpleNamespace(report_language="zh")
+        pools={"up":q.limit_pool(pd.DataFrame({"代码":["002938","300394"]}),"2026-11-26","up"),
+               "down":q.limit_pool(pd.DataFrame(),"2026-11-26","down")}
+        o=MarketOverview(date="2026-11-26",breadth_quality={"status":"PARTIAL","limit_pools":pools})
+        payload=analyzer.build_market_review_payload(o,[],"# 固定样本")
+        self.assertEqual(payload["financial_market_data"]["limit_pools"],pools)
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            p=archive_market(root,region="cn",query_id="pool-sync",payload=payload)
+            data=json.loads((p/"market_data.json").read_text())
+            self.assertEqual(data["financial_market_data"]["limit_pools"],data["breadth"]["limit_pools"])
+            self.assertEqual(data["breadth"]["limit_pools"],pools)
+            self.assertTrue(verify(root))
     def test_archive(self):
         from src.raw_data_archive import archive_market,verify
         with tempfile.TemporaryDirectory() as tmp:
@@ -136,11 +190,14 @@ def render_fixture(output):
     out=Path(output); out.mkdir(parents=True,exist_ok=True)
     with patch.object(q,"date_state",return_value="CURRENT_DATE"):
         p=fixture()
-    p["financial_market_data"]=q.financial_market_model(p)
     p["breadth"]["limit_pools"]={"up":{"count":2,"status":"UNVERIFIED","requested_trade_date":"2026-11-26"},"down":{"count":None,"status":"UNAVAILABLE","requested_trade_date":"2026-11-26"}}
+    p["financial_market_data"]=q.financial_market_model(p)
+    assert p["financial_market_data"]["limit_pools"]==p["breadth"]["limit_pools"]
     (out/"structured-market.json").write_text(json.dumps(p,ensure_ascii=False,indent=2),encoding="utf8")
     render_pages(market_pages("",p),out)
     p=dict(p,indices=[],breadth={"status":"UNAVAILABLE"},sectors={},concepts={})
+    p["financial_market_data"]=q.financial_market_model(p)
     render_pages([("missing-"+n,h) for n,h in market_pages("",p)],out)
     partial=dict(p,breadth={"status":"PARTIAL","up_count":2,"down_count":1,"flat_count":0})
+    partial["financial_market_data"]=q.financial_market_model(partial)
     render_pages([("partial-"+n,h) for n,h in market_pages("",partial)],out)
