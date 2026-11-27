@@ -96,6 +96,12 @@ jobs:
           assert write_index(root) == 3
           PY
 
+      - name: Run Phase 2.4.2 offline health monitor tests
+        run: |
+          python -m compileall -q src/provider_health_monitor.py src/services/run_diagnostics.py data_provider/base.py
+          python -m unittest discover -s tests -p test_provider_health_monitor.py -v
+          PYTHONPATH=tests:. python -c "from test_provider_health_monitor import render_fixture; render_fixture('image-test/phase242')"
+
       - name: Run Phase 2.4.1 offline source audit
         run: |
           python -m unittest discover -s tests -p test_data_source_audit.py -v
