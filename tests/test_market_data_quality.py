@@ -24,6 +24,13 @@ def fixture():
                 concepts=dict(top=[dict(name="光通信",change_pct=2.5,classification="fixture")],bottom=[]))
 
 class MarketQualityTest(unittest.TestCase):
+    def setUp(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        clock=patch.object(q,'china_now',return_value=datetime(2026,11,26,18,tzinfo=ZoneInfo('Asia/Shanghai')))
+        self.addCleanup(clock.stop); clock.start()
+        session=patch.object(q,'expected_session',return_value='2026-11-26')
+        self.addCleanup(session.stop); session.start()
     def test_breadth_scope(self):
         r=q.breadth_from_frame(frame(),"fixture",min_universe=4)
         self.assertEqual((r["up_count"],r["down_count"],r["flat_count"]),(1,1,1))
@@ -78,6 +85,7 @@ class MarketQualityTest(unittest.TestCase):
         a=Fake("A",0,full[:1]); b=Fake("B",1,full)
         with patch.dict(os.environ,{"DSA_MARKET_DATA_QUALITY":"true","DSA_PROVIDER_HEALTH_JOURNAL":""}):
             m=DataFetcherManager([a,b])
+            m._get_tickflow_fetcher=lambda:None
             self.assertEqual(len(m.get_main_indices("cn")),6)
             self.assertEqual((a.calls,b.calls),(1,1))
     def test_dashboard_no_ai_overwrite(self):
@@ -86,6 +94,35 @@ class MarketQualityTest(unittest.TestCase):
         self.assertNotIn("99999",pages["market-01"])
         self.assertIn("光通信",pages["market-concepts-top"])
         self.assertIn("市场宽度",pages["market-breadth"])
+    def test_previous_turnover(self):
+        a=q.breadth_from_frame(frame(),"fixture",min_universe=4,known_date="2026-11-26",completed_session=True)
+        b=dict(a,trade_date="2026-11-25",total_amount=5)
+        self.assertAlmostEqual(q.previous_turnover(a,b,"2026-11-25")["turnover_change_pct"],20)
+        self.assertIsNone(q.previous_turnover(a,dict(b,universe_hash="different"),"2026-11-25")["turnover_change_pct"])
+        self.assertIsNone(q.previous_turnover(a,dict(b,completed_session=False),"2026-11-25")["turnover_change_pct"])
+    def test_limit_pool(self):
+        self.assertEqual(q.limit_pool(pd.DataFrame({"代码":["002938","002938","300394"]}),"2026-11-26","up")["count"],2)
+        self.assertIsNone(q.limit_pool(pd.DataFrame(),"2026-11-26","down")["count"])
+    def test_sector_amount(self):
+        df=pd.DataFrame({"板块":["A","B"],"涨跌幅":[1,-1],"成交额":[100000000,200000000]})
+        top,bottom=q.rank_frame(df,"板块","涨跌幅",1,"fixture","industry",amount_multiplier=1)
+        self.assertEqual(top[0]["amount"],100000000)
+        self.assertEqual(bottom[0]["amount"],200000000)
+    def test_required_dates(self):
+        self.assertIsNone(q.breadth_from_frame(frame(),"fixture",known_date="2026-11-26",require_row_date=True))
+    def test_model(self):
+        m=q.financial_market_model(fixture())
+        self.assertEqual(m["breadth"]["up_count"]["value"],1)
+        self.assertEqual(m["breadth"]["up_count"]["quality"]["status"],"UNVERIFIED")
+        self.assertEqual(len(m["indices"]),6)
+    def test_archive_model(self):
+        from src.raw_data_archive import archive_market,verify
+        with tempfile.TemporaryDirectory() as tmp:
+            data=fixture()
+            data["financial_market_data"]=q.financial_market_model(data)
+            p=archive_market(Path(tmp),region="cn",query_id="model",payload=data)
+            self.assertEqual(json.loads((p/"market_data.json").read_text())["financial_market_data"],data["financial_market_data"])
+            self.assertTrue(verify(Path(tmp)))
     def test_archive(self):
         from src.raw_data_archive import archive_market,verify
         with tempfile.TemporaryDirectory() as tmp:
@@ -97,8 +134,13 @@ class MarketQualityTest(unittest.TestCase):
 def render_fixture(output):
     from src.financial_dashboard import market_pages,render_pages
     out=Path(output); out.mkdir(parents=True,exist_ok=True)
-    p=fixture()
+    with patch.object(q,"date_state",return_value="CURRENT_DATE"):
+        p=fixture()
+    p["financial_market_data"]=q.financial_market_model(p)
+    p["breadth"]["limit_pools"]={"up":{"count":2,"status":"UNVERIFIED","requested_trade_date":"2026-11-26"},"down":{"count":None,"status":"UNAVAILABLE","requested_trade_date":"2026-11-26"}}
     (out/"structured-market.json").write_text(json.dumps(p,ensure_ascii=False,indent=2),encoding="utf8")
     render_pages(market_pages("",p),out)
     p=dict(p,indices=[],breadth={"status":"UNAVAILABLE"},sectors={},concepts={})
     render_pages([("missing-"+n,h) for n,h in market_pages("",p)],out)
+    partial=dict(p,breadth={"status":"PARTIAL","up_count":2,"down_count":1,"flat_count":0})
+    render_pages([("partial-"+n,h) for n,h in market_pages("",partial)],out)
