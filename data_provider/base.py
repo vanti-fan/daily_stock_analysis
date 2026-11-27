@@ -3467,7 +3467,11 @@ class DataFetcherManager:
         from src.market_data_quality import enabled, quality_route, index_rows, INDEX_NAMES
         if region == "cn" and enabled():
             candidates = [f for f in self._get_fetchers_snapshot()
-                          if type(f).get_main_indices is not BaseFetcher.get_main_indices]
+                          if getattr(type(f), "get_main_indices", None) is not getattr(BaseFetcher, "get_main_indices", None)
+                          and callable(getattr(f, "get_main_indices", None))]
+            tickflow = self._get_tickflow_fetcher()
+            if tickflow is not None and not any(f.name == tickflow.name for f in candidates):
+                candidates.insert(0, tickflow)
             return quality_route(candidates,"market_indices","get_main_indices",
                 lambda f:f.get_main_indices(region=region),index_rows,
                 lambda rows:len(rows)==len(INDEX_NAMES) and all(r["date_status"]=="CURRENT_DATE" for r in rows),
@@ -3508,7 +3512,11 @@ class DataFetcherManager:
         from src.market_data_quality import enabled, quality_route, normalize_stats
         if enabled():
             candidates = [f for f in self._get_fetchers_snapshot()
-                          if type(f).get_market_stats is not BaseFetcher.get_market_stats]
+                          if getattr(type(f), "get_market_stats", None) is not getattr(BaseFetcher, "get_market_stats", None)
+                          and callable(getattr(f, "get_market_stats", None))]
+            tickflow = self._get_tickflow_fetcher()
+            if tickflow is not None and not any(f.name == tickflow.name for f in candidates):
+                candidates.insert(0, tickflow)
             data = quality_route(candidates,"market_stats","get_market_stats",
                 lambda f:f.get_market_stats(allow_cache=allow_cache),normalize_stats,
                 lambda d:d.get("breadth_usable") and d.get("total_amount") is not None and d.get("date_status")=="CURRENT_DATE",
