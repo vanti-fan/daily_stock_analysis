@@ -127,6 +127,17 @@ def archive_inputs(root, *, code, name, market, query_id, rows=None, quote=None,
                    chip=None, fundamental=None, expected_trade_date=None, history_metadata=None):
     raw_rows = [project(row,HISTORY_KEYS) for row in (rows if rows is not None else [])]
     sources = sorted({r["data_source"] for r in raw_rows if r.get("data_source")})
+    # Only propagate QFQ when the archived rows are covered by reviewed evidence.
+    from src.intelligent_fallback import HISTORY
+    evidence=history_metadata or {}
+    dates=[str(r.get("date") or "")[:10] for r in raw_rows]
+    provider=evidence.get("provider")
+    adjustment=("QFQ" if dates and provider and sources==[provider]
+                and all(r.get("data_source")==provider for r in raw_rows)
+                and HISTORY.get(provider)=="QFQ" and evidence.get("adjustment")=="QFQ"
+                and evidence.get("first_date") and evidence.get("last_date")
+                and evidence["first_date"]<=min(dates)<=max(dates)<=evidence["last_date"]
+                else None)
     currency = string(read(quote,"currency")) or {
         "cn":"CNY","hk":"HKD","us":"USD","jp":"JPY","kr":"KRW","tw":"TWD"
     }.get(market)
@@ -144,7 +155,7 @@ def archive_inputs(root, *, code, name, market, query_id, rows=None, quote=None,
     }
     metadata = {"history_count":len(raw_rows),"history_sources":sources,
                 "history_origin":"stored_daily_bars_before_realtime_augmentation",
-                "history_adjustment":(history_metadata or {}).get("adjustment"),"history_evidence":history_metadata,
+                "history_adjustment":adjustment,"history_evidence":history_metadata,
                 "volume_unit":"share","amount_unit":currency,
                 "expected_trade_date":expected_trade_date,
                 "availability":{"history":bool(raw_rows),"quote":quote is not None,
@@ -153,7 +164,7 @@ def archive_inputs(root, *, code, name, market, query_id, rows=None, quote=None,
     try:
         model=build_stock_data(identity,quote=quote,history=raw_rows or None,
                               history_source=sources[0] if len(sources)==1 and all(r.get("data_source") for r in raw_rows) else None,
-                              volume_unit="share",amount_unit=currency,trend=trend,
+                              adjustment=adjustment,volume_unit="share",amount_unit=currency,trend=trend,
                               trend_sample_count=trend_input_count,
                               trend_trade_date=trend_trade_date,chip=chip)
         files["financial_data.json"]=json_bytes(model.to_dict())
@@ -217,6 +228,14 @@ def verify(root):
     index=[]
     for path in manifests:
         manifest=json.loads(path.read_text(encoding="utf-8"))
+        parts=path.relative_to(root).parts
+        if (len(parts)!=5 or manifest.get("archive_version")!=ARCHIVE_VERSION
+            or manifest.get("schema_version")!=SCHEMA_VERSION
+            or tuple(parts[:3])!=tuple(safe_segment(manifest.get(k)) for k in ("kind","identity","query_id"))
+            or not re.fullmatch(r"[a-f0-9]{32}",parts[3])
+            or any((root.joinpath(*parts[:i])).is_symlink() for i in range(1,len(parts)+1))):
+            raise ValueError("Archive identity, schema or path mismatch")
+
         expected={x["path"] for x in manifest["files"]}
         actual={p.name for p in path.parent.iterdir() if p.name!="manifest.json"}
         if actual!=expected or len(expected)!=len(manifest["files"]):
@@ -225,6 +244,8 @@ def verify(root):
             name=entry["path"]
             if not re.fullmatch(r"[A-Za-z0-9_-]+\.(json|csv)",name):
                 raise ValueError("Invalid manifest path")
+            if (path.parent/name).is_symlink() or not (path.parent/name).is_file():
+                raise ValueError("Archive entry must be a regular file")
             data=(path.parent/name).read_bytes()
             if len(data)!=entry["bytes"] or hashlib.sha256(data).hexdigest()!=entry["sha256"]:
                 raise ValueError("Archive digest mismatch: "+name)
