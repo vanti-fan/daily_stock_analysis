@@ -144,6 +144,26 @@ def assess_stock(root, index, row):
         groups[group]={k:assess_field(k,data.get(k),expected_date=expected,
                        require_date=group in ("snapshot","technical","chips","fundamentals"),
                        currency=identity.get("currency")) for k in keys}
+    from src import chip_data_quality as cq
+    chip_meta=None
+    raw_chip=load_json(folder,"chip.json") if folder else None
+    if cq.enabled() or (isinstance(raw_chip,dict) and raw_chip.get("data_kind")):
+        error=cq.snapshot_error(raw_chip,code,expected)
+        chip_meta={"status":"AVAILABLE" if not error else "UNAVAILABLE","reason":error,
+                   "source":cq.read(raw_chip,"source"),"data_kind":cq.read(raw_chip,"data_kind"),
+                   "price_basis":cq.read(raw_chip,"price_basis"),"trade_date":cq.read(raw_chip,"date")}
+        for key in cq.FIELDS:
+            item=groups["chips"].get(key)
+            if item is None:
+                item=assess_field(key,None,expected_date=expected,require_date=True,currency=identity.get("currency"))
+                groups["chips"][key]=item
+            if error:
+                item.update(usable=False,status="STALE" if error=="stale" else "UNVERIFIED" if raw_chip else "NOT_PROVIDED",reason=error)
+            elif not item.get("usable") or item.get("value")!=cq.read(raw_chip,key):
+                item.update(usable=False,status="CONFLICT",reason="chip_model_archive_mismatch")
+                chip_meta.update(status="UNAVAILABLE",reason="chip_model_archive_mismatch")
+        if chip_meta["status"]!="AVAILABLE":
+            for item in groups["chips"].values(): item["usable"]=False
     snapshot=groups["snapshot"]
     prices=[snapshot.get(k,{}) for k in ("low","open","price","high")]
     if all(x.get("usable") for x in prices):
@@ -179,7 +199,7 @@ def assess_stock(root, index, row):
     raw_boards=(board_data or {}).get("belong_boards") if isinstance(board_data,dict) else None
     if isinstance(raw_boards,dict): raw_boards=raw_boards.get("data")
     boards=[{k:b.get(k) for k in ("name","code","type","source")} for b in (raw_boards or []) if isinstance(b,dict) and b.get("name")] if isinstance(raw_boards,list) else []
-    return {"boards":boards,"code":code,"name":identity.get("name") or row.get("name") or code,"query_id":query_id,
+    return {**({"chip_quality":chip_meta} if chip_meta is not None else {}),"boards":boards,"code":code,"name":identity.get("name") or row.get("name") or code,"query_id":query_id,
             "expected_trade_date":expected,"archive_reason":model_reason,"quote_status":quote_status,
             "groups":groups,"coverage":{k:summarize(v.values()) for k,v in groups.items()},
             "required_quote_coverage":required,"history":history_summary,
