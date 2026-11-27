@@ -43,6 +43,7 @@ def safe_url(value):
         pairs=[(k,v) for k,v in parse_qsl(p.query,keep_blank_values=False)
                if k.lower() in TRACKING_SAFE and re.fullmatch(r"[\w.-]{1,100}",v)]
         if len(p.path)>600 or re.search(r"[\x00-\x20<>]",p.path): return None
+        if p.path=="/" and not pairs: return None
         return urlunsplit((p.scheme,h,p.path,urlencode(sorted(pairs)),""))
     except (ValueError,TypeError): return None
 
