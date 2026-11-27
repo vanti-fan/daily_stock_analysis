@@ -4663,7 +4663,7 @@ class SearchService:
                 nq.archive_response(response,stock_code)
                 budget-=used
                 if not used: break
-            return results
+            return nq.dedup_responses(results)
         results = {}
         search_count = 0
 
