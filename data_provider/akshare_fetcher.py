@@ -2342,7 +2342,7 @@ class AkshareFetcher(BaseFetcher):
             df = (_akshare_call_with_timeout(ak.stock_sector_spot,timeout=self._market_stats_call_timeout,
                     call_name="ak.stock_sector_spot",indicator="行业") if enabled() else ak.stock_sector_spot(indicator='行业'))
             if df is None or df.empty:
-                return None
+                return partial_rank
             change_col = '涨跌幅'
             name = '板块'
             if enabled():
@@ -2502,6 +2502,24 @@ class AkshareFetcher(BaseFetcher):
                 'source': '雪球关注榜',
             })
         return rows
+
+    def get_market_limit_pools(self, trade_date):
+        from src.market_data_quality import limit_pool, trade_day
+        import akshare as ak
+        day = trade_day(trade_date)
+        if not day: return {}
+        results = {}
+        for side, api in (("up", "stock_zt_pool_em"), ("down", "stock_zt_pool_dtgc_em")):
+            try:
+                self._set_random_user_agent()
+                self._enforce_rate_limit()
+                df = _akshare_call_with_timeout(getattr(ak, api), date=day.replace("-", ""),
+                    timeout=self._market_stats_call_timeout, call_name=api)
+                results[side] = limit_pool(df, day, side)
+            except Exception as exc:
+                logger.warning("Limit pool %s unavailable (%s)", side, type(exc).__name__)
+                results[side] = limit_pool(None, day, side)
+        return results
 
     def get_limit_up_pool(
         self,
