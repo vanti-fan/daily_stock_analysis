@@ -763,6 +763,15 @@ def structured_market_pages(content,payload):
     body+=section("成交额与覆盖",grid([("样本成交额(亿元)",fmt(b.get("total_amount"),0),""),("较前日",pct(b.get("turnover_change_pct")),""),("有效样本",fmt(b.get("valid_count"),0),""),("返回股票数",fmt(b.get("universe_count"),0),""),("零成交额样本",fmt(b.get("zero_amount_count"),0),"")]))
     body+=section("质量与来源","<p>"+e(b.get("status") or "UNAVAILABLE")+" · "+e(b.get("provider") or MISSING)+" · "+e(asof(b))+"</p><p>全市场覆盖未独立核实；涨跌停仅采用供应商明确限价，不使用板块规则推测。</p>")
     pages.append(("market-breadth",page("市场宽度与成交额",stamp,body,"MARKET / BREADTH")))
+    pools=b.get("limit_pools") or {}
+    if pools:
+        records=[[label,fmt((pools.get(side) or {}).get("count"),0),
+                  (pools.get(side) or {}).get("requested_trade_date") or MISSING,
+                  (pools.get(side) or {}).get("status") or MISSING]
+                 for side,label in (("up","涨停池"),("down","跌停池"))]
+        pages.append(("market-limit-pools",page("供应商涨跌停池",stamp,
+            section("独立股池",table(["股池","去重数量","请求日期","状态"],records))+
+            '<div class="notice">供应商股池不等于全市场涨跌停统计；空返回不按零处理。</div>',"MARKET / LIMIT POOLS")))
     for key,label in (("sectors","行业"),("concepts","概念")):
         group=payload.get(key) or {}
         for direction,title in (("top","涨幅排名"),("bottom","跌幅排名")):
@@ -774,7 +783,9 @@ def structured_market_pages(content,payload):
             pages.append(("market-"+key+"-"+direction,page(label+"板块"+title,stamp,body,"MARKET / SECTORS")))
     # Model narrative remains separate, never reparsed for market figures.
     p=_market_data_from_payload(payload,content,date.today())
-    body=section("AI研究观点",bullets(p.plan+p.focus+p.avoid,90))
+    light=payload.get("market_light") or {}
+    body=section("市场信号质量",grid([("评分",light.get("score") if light.get("data_quality")=="ok" else MISSING,""),("质量",light.get("data_quality") or MISSING,"")]))
+    body+=section("AI研究观点",bullets(p.plan+p.focus+p.avoid,90))
     body+=section("风险与数据边界",bullets(p.risks,100))
     pages.append(("market-03",page("市场观察与风险",stamp,body,"MARKET / OUTLOOK")))
     return pages
