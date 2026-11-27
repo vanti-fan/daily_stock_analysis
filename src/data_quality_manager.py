@@ -181,6 +181,17 @@ def assess_stock(root, index, row):
         historical_status="UNVERIFIED"
     elif day(last_date) and day(expected) and day(last_date)<day(expected):
         historical_status="STALE"
+    from src.intelligent_fallback import strict_history
+    if strict_history(code) and (bars or groups["technical"]):
+        evidence=metadata.get("history_evidence") or {}
+        qfq_ok=(history.get("adjustment")=="QFQ" and metadata.get("history_adjustment")=="QFQ"
+                and evidence.get("adjustment")=="QFQ" and evidence.get("provider")==history.get("source"))
+        if not qfq_ok and bars:
+            historical_status="UNVERIFIED" if historical_status!="CONFLICT" else historical_status
+        for item in groups["technical"].values():
+            if item["usable"] and (not qfq_ok or not bars or historical_status!="AVAILABLE"
+                                  or item.get("trade_date")!=last_date):
+                item.update(status="UNVERIFIED",reason="technical_history_basis_not_verified",usable=False)
     history_summary={"status":historical_status,"bar_count":len(bars),"latest_trade_date":last_date,
                      "adjustment":history.get("adjustment"),"source":history.get("source")}
     research=load_json(result_folder,"ai_research.json") if result_folder else None
