@@ -188,12 +188,19 @@ def archive_market(root, *, region, query_id, payload=None, snapshot=None, reuse
                              "snapshot_available":snapshot is not None})
 
 
+def archive_news(root, *, code, query_id, payload):
+    if payload.get("stock_code") != code or payload.get("schema_version") != "1.0":
+        raise ValueError("News identity or schema mismatch")
+    return publish(root,kind="stock-news",query_id=query_id,identity=code,
+                   files={"news_events.json":json_bytes(payload)},
+                   metadata={"status":payload.get("status"),"dimension":payload.get("dimension")})
+
 def record(stage, **kwargs):
     """Production hook: fail-open; never perform external requests or log payloads."""
     if not enabled():
         return None
     try:
-        fn={"inputs":archive_inputs,"research":archive_research,"market":archive_market}[stage]
+        fn={"inputs":archive_inputs,"research":archive_research,"market":archive_market,"news":archive_news}[stage]
         path=fn(archive_root(),**kwargs)
         logger.info("Raw archive published: %s",path)
         return path
