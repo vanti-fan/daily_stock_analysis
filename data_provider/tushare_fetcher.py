@@ -1300,7 +1300,29 @@ class TushareFetcher(BaseFetcher):
                     if enabled():
                         if "trade_date" not in df.columns or not all(str(d).replace("-", "")[:8] == last_date for d in df["trade_date"]):
                             return None
-                        return breadth_from_frame(df, "tushare_daily", amount_multiplier=1000, known_date=last_date)
+                        from src.market_data_quality import previous_turnover, session_dates, trade_day
+                        current = breadth_from_frame(df, "tushare_daily", amount_multiplier=1000,
+                            known_date=last_date, require_row_date=True, completed_session=True)
+                        sessions = session_dates(china_now)
+                        day = trade_day(last_date)
+                        if current and current.get("total_amount") is not None and day in sessions:
+                            pos = sessions.index(day)
+                            if pos > 0:
+                                previous = sessions[pos-1].replace("-", "")
+                                try:
+                                    prior = self._call_api_with_rate_limit("daily",
+                                        ts_code='3*.SZ,6*.SH,0*.SZ,92*.BJ',
+                                        start_date=previous, end_date=previous)
+                                    if prior is not None and not prior.empty:
+                                        prior = prior.copy()
+                                        prior.columns = [str(c).lower() for c in prior.columns]
+                                        old = breadth_from_frame(prior, "tushare_daily",
+                                            amount_multiplier=1000, known_date=previous,
+                                            require_row_date=True, completed_session=True)
+                                        current = previous_turnover(current, old, previous)
+                                except Exception as exc:
+                                    logger.warning("Previous turnover unavailable (%s)", type(exc).__name__)
+                        return current
 
                     # 获取股票基础信息（包含代码和名称）
                     df_basic = self._call_api_with_rate_limit("stock_basic", fields='ts_code,name')
