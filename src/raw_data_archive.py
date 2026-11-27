@@ -206,12 +206,28 @@ def archive_news(root, *, code, query_id, payload):
                    files={"news_events.json":json_bytes(payload)},
                    metadata={"status":payload.get("status"),"dimension":payload.get("dimension")})
 
+def archive_batch(root, *, query_id, rows, as_of):
+    """Freeze intended subjects and outcomes even when AI or delivery failed."""
+    from datetime import date
+    if date.fromisoformat(as_of).isoformat()!=as_of:
+        raise ValueError("Invalid batch reference date")
+    rows=[project(row,("code","name","status","query_id","expected_trade_date")) for row in rows]
+    codes=[r.get("code") for r in rows]
+    if not rows or any(not isinstance(c,str) or not c for c in codes) or len(set(codes))!=len(codes):
+        raise ValueError("Invalid batch subjects")
+    flags=("DSA_INTELLIGENT_FALLBACK","DSA_MARKET_DATA_QUALITY",
+           "DSA_CHIP_DATA_QUALITY","DSA_NEWS_SOURCE_QUALITY")
+    policy={k:os.environ.get(k,"").lower()=="true" for k in flags}
+    return publish(root,kind="report-batch",identity="watchlist",query_id=query_id,
+                   files={"batch.json":json_bytes({"schema_version":"1.0","as_of":as_of,
+                         "rows":rows,"policy":policy})})
+
 def record(stage, **kwargs):
     """Production hook: fail-open; never perform external requests or log payloads."""
     if not enabled():
         return None
     try:
-        fn={"inputs":archive_inputs,"research":archive_research,"market":archive_market,"news":archive_news}[stage]
+        fn={"inputs":archive_inputs,"research":archive_research,"market":archive_market,"news":archive_news,"batch":archive_batch}[stage]
         path=fn(archive_root(),**kwargs)
         logger.info("Raw archive published: %s",path)
         return path
