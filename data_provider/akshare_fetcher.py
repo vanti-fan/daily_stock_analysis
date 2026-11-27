@@ -2086,7 +2086,25 @@ class AkshareFetcher(BaseFetcher):
         """
         import akshare as ak
 
-        partial_stats = None
+        from src.market_data_quality import enabled, breadth_from_frame
+        if enabled():
+            best = None
+            def quality(d):
+                return (d.get("date_status") == "CURRENT_DATE", bool(d.get("breadth_usable")),
+                        d.get("total_amount") is not None, d.get("valid_count") or 0)
+            for api, source in (("stock_zh_a_spot_em", "akshare_em"), ("stock_zh_a_spot", "akshare_sina")):
+                try:
+                    self._set_random_user_agent()
+                    self._enforce_rate_limit()
+                    df = _akshare_call_with_timeout(getattr(ak, api), timeout=self._market_stats_call_timeout, call_name=api)
+                    result = breadth_from_frame(df, source)
+                    if result and (best is None or quality(result) > quality(best)):
+                        best = result
+                    if result and result.get("breadth_usable") and result.get("total_amount") is not None and result.get("date_status") == "CURRENT_DATE":
+                        return result
+                except Exception as exc:
+                    logger.warning("Market breadth %s failed (%s)", source, type(exc).__name__)
+            return best
         # 优先东财接口
         try:
             self._set_random_user_agent()
@@ -2109,19 +2127,7 @@ class AkshareFetcher(BaseFetcher):
                 elapsed,
             )
             if df is not None and not df.empty:
-                from src.market_data_quality import enabled, breadth_from_frame
-                if enabled():
-                    stats=breadth_from_frame(df,"akshare_em")
-                    if stats and stats.get("breadth_usable"): return stats
-                    partial_stats = stats
-                else:
-                    from src.market_data_quality import enabled, breadth_from_frame
-                if enabled():
-                    stats=breadth_from_frame(df,"akshare_sina")
-                    if stats and stats.get("breadth_usable"): return stats
-                    return stats or partial_stats
-                else:
-                    return self._calc_market_stats(df)
+                return self._calc_market_stats(df)
             logger.warning(
                 "[MarketStats] component=market_stats provider=AkshareFetcher "
                 "api=ak.stock_zh_a_spot_em action=parse status=empty"
@@ -2185,7 +2191,7 @@ class AkshareFetcher(BaseFetcher):
                 e,
             )
 
-        return partial_stats
+        return None
 
     def _calc_market_stats(
         self,
