@@ -881,6 +881,13 @@ def record_provider_run(
     record_count: Optional[int] = None,
 ) -> None:
     """Append a provider attempt to the active context without affecting callers."""
+    try:
+        from src.provider_health_monitor import finish
+        finish(data_type, provider, operation, success, latency_ms=latency_ms,
+               error_type=error_type, cache_hit=cache_hit, fallback_from=fallback_from,
+               fallback_to=fallback_to, record_count=record_count)
+    except Exception:
+        logger.warning("provider health outcome capture failed")
     context = get_current_diagnostic_context()
     if context is None:
         return
@@ -914,6 +921,11 @@ def record_provider_run_started(
     operation: str,
 ) -> None:
     """Emit a live provider-start event without changing persisted diagnostics."""
+    try:
+        from src.provider_health_monitor import start
+        start(data_type, provider, operation)
+    except Exception:
+        logger.warning("provider health start capture failed")
     context = get_current_diagnostic_context()
     if context is None:
         return
