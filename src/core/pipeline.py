@@ -4179,6 +4179,13 @@ class StockAnalysisPipeline:
         logger.info(f"Succeeded: {success_count}, failed: {fail_count}, elapsed: {elapsed_time:.2f}s")
         
         self._financial_dashboard_rows = None
+        from src.raw_data_archive import enabled as archive_enabled, record as record_archive
+        if not dry_run and archive_enabled():
+            from zoneinfo import ZoneInfo
+            batch_as_of=resume_reference_time.astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
+            batch_rows=[dict(row,query_id=dashboard_query_ids.get(row["code"]))
+                        for row in fd.batch_status(requested_codes,results,dashboard_failures)]
+            record_archive("batch",query_id=uuid.uuid4().hex,rows=batch_rows,as_of=batch_as_of)
         if dashboard_enabled:
             self._financial_dashboard_rows = fd.batch_status(requested_codes, results, dashboard_failures)
             try:
@@ -4187,7 +4194,7 @@ class StockAnalysisPipeline:
                     from src.data_quality_manager import build_report, attach_quality, write_report, unavailable_quality
                     try:
                         quality_rows = [dict(row, query_id=dashboard_query_ids.get(row['code'])) for row in self._financial_dashboard_rows]
-                        quality = build_report(archive_root(), quality_rows)
+                        quality = build_report(archive_root(), quality_rows, as_of=datetime.fromisoformat(batch_as_of).date())
                         write_report(archive_root() / 'data-quality.json', quality)
                         self._financial_dashboard_rows = attach_quality(quality_rows, quality)
                     except Exception as exc:
