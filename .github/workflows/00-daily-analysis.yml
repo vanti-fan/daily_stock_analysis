@@ -101,6 +101,7 @@ jobs:
       
       - name: 执行股票分析
         env:
+          DSA_PROVIDER_HEALTH_JOURNAL: ${{ github.ref == 'refs/heads/feature/telegram-dashboard-v1' && format('reports/provider-health-{0}-{1}.jsonl', github.run_id, github.run_attempt) || '' }}
           # ==========================================
           # AI 配置
           # ==========================================
@@ -623,6 +624,11 @@ jobs:
         if: always() && github.ref == 'refs/heads/feature/telegram-dashboard-v1'
         run: |
           python -c "from src.raw_data_archive import archive_root, write_index; print('Verified archive bundles:', write_index(archive_root()))"
+
+      - name: Generate provider health report
+        if: always() && github.ref == 'refs/heads/feature/telegram-dashboard-v1'
+        run: |
+          python -m src.provider_health_monitor --journal "reports/provider-health-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" --output reports/provider-health.json --quality-root reports
 
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
