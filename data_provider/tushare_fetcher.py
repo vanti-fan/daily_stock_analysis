@@ -1262,9 +1262,10 @@ class TushareFetcher(BaseFetcher):
                 try:
                     df = self._call_api_with_rate_limit("rt_k", ts_code='3*.SZ,6*.SH,0*.SZ,92*.BJ')
                     if df is not None and not df.empty:
-                        if enabled(): return breadth_from_frame(df,'tushare_rt_k')
-                        if enabled(): return breadth_from_frame(df,'tushare_daily',known_date=last_date)
-                    return self._calc_market_stats(df)
+                        if enabled():
+                            return breadth_from_frame(df, "tushare_rt_k", amount_multiplier=1)
+                        return self._calc_market_stats(df)
+                    return None
                 except TusharePermissionError:
                     return None
                 except Exception as e:
@@ -1280,7 +1281,7 @@ class TushareFetcher(BaseFetcher):
                     else:  # 即 '> 16:30'                  
                         last_date = self._pick_trade_date(trade_dates, use_today=True)  # 拿取当天的数据
 
-                if last_date is None or self.is_api_denied("daily") or self.is_api_denied("stock_basic"):
+                if last_date is None or self.is_api_denied("daily") or (not enabled() and self.is_api_denied("stock_basic")):
                     return None
 
                 try:
@@ -1295,6 +1296,11 @@ class TushareFetcher(BaseFetcher):
                     # 为防止不同接口返回的列名大小写不一致（例如 rt_k 返回小写，daily 返回大写），统一将列名转为小写
                     df = df.copy()
                     df.columns = [col.lower() for col in df.columns]
+
+                    if enabled():
+                        if "trade_date" not in df.columns or not all(str(d).replace("-", "")[:8] == last_date for d in df["trade_date"]):
+                            return None
+                        return breadth_from_frame(df, "tushare_daily", amount_multiplier=1000, known_date=last_date)
 
                     # 获取股票基础信息（包含代码和名称）
                     df_basic = self._call_api_with_rate_limit("stock_basic", fields='ts_code,name')
