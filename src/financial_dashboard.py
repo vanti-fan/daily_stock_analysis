@@ -470,6 +470,8 @@ def stock_pages(notifier, rows, results, report):
         quality=row.get("data_quality",{})
         if quality.get("chip_quality") is not None:
             pages.append(chip_page(row["code"],quality,stamp))
+        if quality.get("news_quality") is not None:
+            pages.extend(news_pages(row["code"],quality,stamp))
     for code, (p, md) in by_code.items():
         fields = stock_fields(md)
         snapshot = [(k,v,change_class(v) if k in ("涨跌","涨跌幅") else "") for k,v,_ in p.snapshot]
@@ -814,3 +816,27 @@ def chip_page(code, quality, stamp):
     if meta.get("reason"): body+='<p>'+e(meta["reason"])+'</p>'
     key=re.sub(r"[^A-Za-z0-9._-]","_",code)
     return ("stock-"+key+"-chips",page((quality.get("name") or code)+" "+code+" 筹码成本",stamp,body,"STOCK / CHIPS"))
+
+def news_pages(code, quality, stamp):
+    meta=quality.get("news_quality") or {}
+    events=meta.get("events") or []
+    status_labels={"AVAILABLE":"已取得新闻（未独立核实）","COMMUNITY_ONLY":"仅社区观点",
+        "NO_USABLE_RESULTS":"未取得符合要求的新闻","SEARCH_FAILED":"搜索失败",
+        "NOT_CONFIGURED":"未配置有效搜索引擎","NOT_ARCHIVED":"本批次无新闻归档",
+        "INVALID_ARCHIVE":"归档质量校验失败"}
+    key=re.sub(r"[^A-Za-z0-9._-]","_",code)
+    result=[]
+    for offset in range(0,max(1,len(events)),3):
+        body=section("新闻检索状态",grid([("状态",status_labels.get(meta.get("status"),"未核实"),""),
+            ("去重事件",len(events),""),("重大事项待确认",sum(x.get("verification")=="NEEDS_OFFICIAL_CONFIRMATION" for x in events),"")]))
+        for item in events[offset:offset+3]:
+            info=" · ".join(str(item.get(k) or MISSING) for k in ("source_tier","publisher_domain","verification"))
+            body+=section(compact(item.get("title"),100),"<p>"+e(info)+"</p><p>发布："+e(item.get("published_date"))+
+                " · 事件："+e(item.get("event_date"))+"</p><p>"+e(compact(item.get("snippet"),110))+
+                '</p><p style="overflow-wrap:anywhere">'+e(compact(item.get("url"),140))+"</p>")
+        if not events: body+=section("事件记录","<p>没有通过本批次质量校验的新闻；不等同于没有重大事件。</p>")
+        body+='<div class="notice">来源分级不等于事实核实；社区仅供情绪参考，重大事项须查官方原文。</div>'
+        if meta.get("rejected_bundles"): body+="<p>拒绝归档："+e(meta["rejected_bundles"])+"</p>"
+        result.append(("stock-"+key+"-news-"+str(offset//3+1).zfill(2),
+            page(code+" "+(quality.get("name") or "")+" 新闻事件",stamp,body,"STOCK / NEWS")))
+    return result
