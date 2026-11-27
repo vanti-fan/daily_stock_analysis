@@ -130,6 +130,7 @@ def _handle_search_stock_news(stock_code: str, stock_name: str) -> dict:
 
     if _stock_run_cancelled():
         return {"error": "Stock analysis timed out before searching news"}
+    from src import news_source_quality as nq
     response = service.search_stock_news(query_code, query_name, max_results=5)
 
     if _stock_run_cancelled():
@@ -144,6 +145,7 @@ def _handle_search_stock_news(stock_code: str, stock_name: str) -> dict:
             "query": response.query,
             "success": False,
             "error": response.error_message,
+            **nq.agent_metadata(response),
         }
 
     record_news_evidence(len(response.results))
@@ -159,6 +161,7 @@ def _handle_search_stock_news(stock_code: str, stock_name: str) -> dict:
         "query": response.query,
         "provider": response.provider,
         "success": True,
+        **nq.agent_metadata(response),
         "results_count": len(response.results),
         "results": [
             {
@@ -167,6 +170,7 @@ def _handle_search_stock_news(stock_code: str, stock_name: str) -> dict:
                 "url": r.url,
                 "source": r.source,
                 "published_date": r.published_date,
+                **nq.agent_metadata(response,r),
             }
             for r in response.results
         ],
@@ -225,6 +229,7 @@ def _handle_search_comprehensive_intel(stock_code: str, stock_name: str) -> dict
         record_news_evidence(0)
         return {"error": "Comprehensive intel search returned no results"}
 
+    from src import news_source_quality as nq
     # Format into readable report
     report = service.format_intel_report(intel_results, query_name)
 
@@ -244,16 +249,21 @@ def _handle_search_comprehensive_intel(stock_code: str, stock_name: str) -> dict
             )
             dimensions[dim_name] = {
                 "query": response.query,
+                **nq.agent_metadata(response),
                 "results_count": len(response.results),
                 "results": [
                     {
                         "title": r.title,
                         "snippet": r.snippet,
                         "source": r.source,
+                        **nq.agent_metadata(response,r),
                     }
                     for r in response.results[:3]  # limit to 3 per dimension to save tokens
                 ],
             }
+
+        elif getattr(response,"news_quality",None):
+            dimensions[dim_name]={"results_count":0,**nq.agent_metadata(response)}
 
     record_news_evidence(evidence_count)
 
