@@ -122,7 +122,7 @@ def matching_bundle(index, root, kind, code, query_id):
     return (root/matches[0]["manifest"]).parent, None
 
 
-def assess_stock(root, index, row):
+def assess_stock(root, index, row, *, as_of=None):
     code,query_id=row["code"],row.get("query_id")
     folder,reason=matching_bundle(index,root,"stock-inputs",code,query_id)
     result_folder,research_reason=matching_bundle(index,root,"stock-research",code,query_id)
@@ -213,7 +213,7 @@ def assess_stock(root, index, row):
     from src import news_source_quality as nq
     news_meta=None
     if nq.eligible(code) and (nq.enabled() or any(x["kind"]=="stock-news" and x["identity"]==code and x["query_id"]==query_id for x in index)):
-        news_meta=nq.assess_archive(root,index,code,query_id)
+        news_meta=nq.assess_archive(root,index,code,query_id,asof=as_of)
     return {**({"news_quality":news_meta} if news_meta is not None else {}),**({"chip_quality":chip_meta} if chip_meta is not None else {}),"boards":boards,"code":code,"name":identity.get("name") or row.get("name") or code,"query_id":query_id,
             "expected_trade_date":expected,"archive_reason":model_reason,"quote_status":quote_status,
             "groups":groups,"coverage":{k:summarize(v.values()) for k,v in groups.items()},
@@ -233,7 +233,7 @@ def source_coverage(stocks):
     """Count field observations, not HTTP requests; missing source stays explicit."""
     sources=defaultdict(list)
     for stock in stocks:
-        for group in ("snapshot","technical","chips"):
+        for group in ("snapshot","technical","chips","fundamentals"):
             for field in stock.get("groups",{}).get(group,{}).values():
                 sources[(field.get("source") or "UNKNOWN",group)].append(field)
     return [{"source":source,"category":group,**summarize(fields)}
@@ -248,10 +248,10 @@ def unavailable_quality(rows):
              "coverage":{},"history":{}}} for r in rows]
 
 
-def build_report(root, rows, *, scenario="LIVE"):
+def build_report(root, rows, *, scenario="LIVE", as_of=None):
     root=Path(root)
     index=verify(root)
-    stocks=[assess_stock(root,index,row) for row in rows]
+    stocks=[assess_stock(root,index,row,as_of=as_of) for row in rows]
     market=[]
     for item in index:
         if item["kind"]!="market":
