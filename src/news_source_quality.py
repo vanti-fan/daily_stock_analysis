@@ -113,23 +113,117 @@ def event_record(item,provider,code,name,dimension,days,asof):
             "verification":status,"publication_date_basis":"SEARCH_PROVIDER_METADATA"},None
 
 def dedup(events):
-    """Conservative same-URL or normalized headline+publication day grouping.
-    Keep alternate evidence; no fuzzy merger of distinct corporate announcements.
-    """
+    """Merge exact URL or normalized headline/date, retaining all evidence."""
     groups=[]
-    for e in sorted(events,key=lambda e:(e["source_tier"],e["published_date"],e["url"])):
+    for e in sorted(events,key=lambda e:(e["source_tier"],e["published_date"],e["url"],e["dimension"])):
         key=(e["stock_code"],e["published_date"],title_key(e["title"]))
-        match=next((g for g in groups if e["url"] in g["evidence_urls"] or key in g["_keys"]),None)
-        evidence={k:e.get(k) for k in ("url","publisher_domain","source_tier","search_provider","published_date","dimension","verification")}
-        if match:
-            if evidence not in match["evidence"]: match["evidence"].append(evidence)
-            if e["url"] not in match["evidence_urls"]: match["evidence_urls"].append(e["url"])
-            if key not in match["_keys"]: match["_keys"].append(key)
-            continue
-        groups.append(dict(e,event_id=hashlib.sha256(("|".join(key)).encode()).hexdigest()[:20],
-                           evidence=[evidence],evidence_urls=[e["url"]],_keys=[key]))
-    for g in groups: g.pop("_keys",None)
+        evidence=[dict(x) for x in e.get("evidence",[]) if isinstance(x,dict)]
+        if not evidence:
+            evidence=[{k:e.get(k) for k in ("url","publisher_domain","source_tier","search_provider","published_date","dimension","verification")}]
+        urls={e["url"],*(x["url"] for x in evidence)}
+        keys={key}
+        matches=[g for g in groups if urls.intersection(g["evidence_urls"]) or keys.intersection(g["_keys"])]
+        if matches:
+            g=matches[0]
+            for other in matches[1:]:
+                evidence.extend(other["evidence"])
+                urls.update(other["evidence_urls"])
+                keys.update(other["_keys"])
+                groups.remove(other)
+            for x in evidence:
+                if x not in g["evidence"]: g["evidence"].append(x)
+            g["evidence_urls"]=sorted(set(g["evidence_urls"])|urls)
+            g["_keys"].update(keys)
+        else:
+            groups.append(dict(e,event_id=hashlib.sha256(("|".join(key)).encode()).hexdigest()[:20],
+                               evidence=evidence,evidence_urls=sorted(urls),_keys=keys))
+    for g in groups:
+        g.pop("_keys",None)
+        g["dimensions"]=sorted({x["dimension"] for x in g["evidence"]})
     return groups
+
+def as_results(events):
+    from src.search_service import SearchResult
+    return [SearchResult(title=e["title"],snippet=e["snippet"],url=e["url"],source=e["publisher_domain"],
+                published_date=e["published_date"],retrieved_at=e["retrieved_at"],
+                relevance_category="direct_company_news",relevance_score=None,
+                relevance_reasons=[e["source_tier"],e["verification"],"事件日期："+(e["event_date"] or "未知")])
+            for e in events if e["source_tier"]!="L4"]
+
+def dedup_responses(responses):
+    """Archive each dimension before dedup; present each event to AI only once."""
+    events=dedup([e for r in responses.values() for e in r.news_quality["events"]])
+    for dimension,r in responses.items():
+        r.results=as_results([e for e in events if e["dimension"]==dimension])
+    return responses
+
+def agent_metadata(response,item=None):
+    quality=getattr(response,"news_quality",None)
+    if not isinstance(quality,dict): return {}
+    if item is None:
+        return {"news_status":quality["status"],"verification_notice":"Search snippets not independently verified; material claims require official evidence."}
+    return {"source_tier":tier(item.url),"verification":next((e["verification"] for e in quality["events"] if e["url"]==item.url),"UNVERIFIED"),
+            "event_date":next((e["event_date"] for e in quality["events"] if e["url"]==item.url),None),
+            "relevance":"DIRECT_TEXT_MATCH","url":item.url,"published_date":item.published_date}
+
+def validate_bundle(payload,code,asof):
+    if not isinstance(payload,dict) or payload.get("schema_version")!="1.0" or payload.get("stock_code")!=code: return "identity_or_schema_mismatch"
+    if day(payload.get("as_of"))!=asof: return "stale_or_unverified_search_date"
+    days=payload.get("window_days")
+    if not isinstance(days,int) or isinstance(days,bool) or not 1<=days<=365: return "invalid_window"
+    if payload.get("status") not in ("AVAILABLE","COMMUNITY_ONLY","NO_USABLE_RESULTS","SEARCH_FAILED","NOT_CONFIGURED"): return "invalid_status"
+    if not isinstance(payload.get("attempts"),list) or not isinstance(payload.get("events"),list): return "missing_evidence"
+    for a in payload["attempts"]:
+        if not isinstance(a,dict) or a.get("provider") not in ("Tavily","Brave") or a.get("status") not in ("AVAILABLE","NO_USABLE_RESULTS","SEARCH_FAILED"): return "invalid_attempt"
+    from types import SimpleNamespace
+    for e in payload["events"]:
+        if not isinstance(e,dict) or e.get("stock_code")!=code: return "event_identity_mismatch"
+        if e.get("dimension")!=payload.get("dimension") or e.get("search_provider") not in ("Tavily","Brave"): return "event_provenance_mismatch"
+        if not all(isinstance(e.get(k),str) for k in ("title","snippet","url","published_date","stock_name")): return "invalid_event_fields"
+        item=SimpleNamespace(**{k:e.get(k) for k in ("title","snippet","url","published_date","retrieved_at")})
+        expected,err=event_record(item,e["search_provider"],code,payload.get("stock_name"),e["dimension"],days,asof)
+        if err or any(e.get(k)!=expected.get(k) for k in ("source_tier","publisher_domain","verification","event_date","relevance","material_candidate","url")): return "event_quality_mismatch"
+        evidence=e.get("evidence")
+        if not isinstance(evidence,list) or not evidence: return "missing_evidence"
+        for x in evidence:
+            if not isinstance(x,dict) or not safe_url(x.get("url")) or safe_url(x["url"])!=x["url"] or tier(x["url"])!=x.get("source_tier") or x.get("source_tier")=="UNKNOWN" or x.get("publisher_domain")!=urlsplit(x["url"]).hostname or x.get("search_provider") not in ("Tavily","Brave") or x.get("dimension")!=payload.get("dimension"): return "invalid_evidence"
+            d=day(x.get("published_date"))
+            if not d or not asof-timedelta(days=days-1)<=d<=asof: return "evidence_date_mismatch"
+        if set(e.get("evidence_urls",[]))!={x["url"] for x in evidence} or e["url"] not in e["evidence_urls"]: return "evidence_url_mismatch"
+    events=payload["events"]
+    if payload["status"]=="AVAILABLE" and not any(e["source_tier"]!="L4" for e in events): return "status_event_mismatch"
+    if payload["status"]=="COMMUNITY_ONLY" and (not events or any(e["source_tier"]!="L4" for e in events)): return "status_event_mismatch"
+    if payload["status"] not in ("AVAILABLE","COMMUNITY_ONLY") and events: return "status_event_mismatch"
+    return None
+
+def assess_archive(root,index,code,query_id,asof=None):
+    """Consume only verified current-query archive bundles, never AI-generated news."""
+    from pathlib import Path
+    import json
+    asof=asof or today_cn()
+    out={"status":"NOT_ARCHIVED","events":[],"attempts":[],"dimensions":[],"rejected_bundles":0,"as_of":asof.isoformat()}
+    if not query_id: return out
+    for row in index:
+        if row["kind"]!="stock-news" or row["identity"]!=code or row["query_id"]!=query_id: continue
+        try:
+            p=(Path(root)/row["manifest"]).parent/"news_events.json"
+            data=json.loads(p.read_text(encoding="utf8"))
+            reason=validate_bundle(data,code,asof)
+            if reason: raise ValueError(reason)
+            out["events"].extend(data["events"])
+            out["attempts"].extend(dict(x,dimension=data["dimension"]) for x in data["attempts"])
+            out["dimensions"].append({"dimension":data["dimension"],"status":data["status"]})
+        except (ValueError,TypeError,KeyError,AttributeError,OSError):
+            out["rejected_bundles"]+=1
+    out["events"]=dedup(out["events"])
+    states={d["status"] for d in out["dimensions"]}
+    out["status"]=("AVAILABLE" if any(e["source_tier"]!="L4" for e in out["events"]) else
+        "COMMUNITY_ONLY" if out["events"] else "NO_USABLE_RESULTS" if "NO_USABLE_RESULTS" in states else
+        "SEARCH_FAILED" if "SEARCH_FAILED" in states else "NOT_CONFIGURED" if "NOT_CONFIGURED" in states else
+        "INVALID_ARCHIVE" if out["rejected_bundles"] else "NOT_ARCHIVED")
+    if out["rejected_bundles"] and out["dimensions"]: out["partial_archive"]=True
+    out["event_count"]=len(out["events"])
+    return out
 
 def route(service,code,name,query,dimension,days,max_results,budget=2):
     """Reuse existing provider clients. Budget is logical provider invocations, not HTTP retries."""
@@ -150,6 +244,7 @@ def route(service,code,name,query,dimension,days,max_results,budget=2):
         try:
             kwargs={"topic":"news"} if isinstance(p,TavilySearchProvider) else service._brave_search_locale(code,prefer_chinese=True) if isinstance(p,BraveSearchProvider) else {}
             raw=p.search(query,service._provider_request_size(max_results),days=days,**kwargs)
+            raw.mark_retrieved()
             raise_if_stock_cancelled()
             had_success=had_success or bool(raw.success)
             rejected={}; admitted=[]
@@ -164,20 +259,14 @@ def route(service,code,name,query,dimension,days,max_results,budget=2):
             service._record_news_search_run(provider=p.name,operation="news_quality_search",success=bool(raw.success),
                 latency_ms=service._elapsed_ms(started),record_count=len(admitted),error_type=None if raw.success else "SearchFailed")
             # Community-only or unconfirmed material reports justify fallback within budget.
-            if any(e["source_tier"] in ("L1","L2","L3") and e["verification"]!="NEEDS_OFFICIAL_CONFIRMATION" for e in admitted): break
+            if any(e["source_tier"]!="L4" for e in admitted) and not any(e["verification"]=="NEEDS_OFFICIAL_CONFIRMATION" for e in admitted): break
         except Exception as exc:
             raise_if_stock_cancelled()
             attempts.append({"provider":p.name,"status":"SEARCH_FAILED","error_type":type(exc).__name__})
             service._record_news_search_run(provider=p.name,operation="news_quality_search",success=False,
                 latency_ms=service._elapsed_ms(started),record_count=0,error_type=type(exc).__name__)
     events=dedup(accepted)[:max_results]
-    # Community opinions are never promoted into factual AI news context.
-    from src.search_service import SearchResult
-    results=[SearchResult(title=e["title"],snippet=e["snippet"],url=e["url"],source=e["publisher_domain"],
-                published_date=e["published_date"],retrieved_at=e["retrieved_at"],
-                relevance_category="direct_company_news",relevance_score=None,
-                relevance_reasons=[e["source_tier"],e["verification"],"事件日期："+(e["event_date"] or "未知")])
-             for e in events if e["source_tier"]!="L4"]
+    results=as_results(events)
     status="AVAILABLE" if results else "COMMUNITY_ONLY" if events else "NO_USABLE_RESULTS" if had_success else "SEARCH_FAILED" if used else "NOT_CONFIGURED"
     response=SearchResponse(query=query,results=results,provider=events[0]["search_provider"] if events else "Filtered" if had_success else "None",
                             success=had_success,error_message=None if had_success else status)
